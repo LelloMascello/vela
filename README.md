@@ -31,7 +31,7 @@ VELA is composed of three hardware nodes working in concert:
 | Node | Hardware | Role |
 |---|---|---|
 | Node 1 | Seeed Studio XIAO ESP32-S3 Sense | Edge device — user input/output |
-| Node 2 | Raspberry Pi 5, 8 GB RAM | Middleware — always on, handles STT and TTS |
+| Node 2 | Raspberry Pi 5, 4 GB RAM | Middleware — always on, handles STT and TTS |
 | Node 3 | Laptop (Ryzen 7 8840HS, Radeon 780M) | Inference server — on-demand vision language model |
 
 The system also supports an Android application as an alternative client, implementing identical functionality to the ESP32 over the same WebSocket protocol.
