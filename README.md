@@ -1,5 +1,5 @@
 # VELA — Voice Edge Local Assistant
-### Assistente Vocale Multimodale Locale · Architettura a Tre Nodi
+### Assistente Vocale Multimodale Locale — Architettura a Tre Nodi
 
 > VELA listens, sees, and speaks — entirely on your own hardware. An open-source multimodal assistant built on ESP32-S3, Raspberry Pi 5, and a local VLM stack. No cloud, no subscriptions, no data leaving your network.
 
@@ -11,18 +11,20 @@
 Il sistema è distribuito su **tre nodi distinti**, ognuno con un ruolo specializzato:
 
 ```
-[ESP32-S3 Sense]  ←—Wi-Fi LAN—→  [Raspberry Pi 5]  ←—Ethernet—→  [Laptop]
-   Occhio + Orecchio               Middleware AI                    Cervello Visivo
-   Mic PDM onboard                 STT (Whisper)                    VLM (Vision LLM)
-   Camera OV2640                   TTS (Piper)                      llama/qwen Q8
-   Display OLED                    FastAPI + WebSocket              llama.cpp + Vulkan
-   Speaker + Amp                   Wake-on-LAN trigger              Solo su richiesta foto
-   2x Pulsanti
+[ESP32-S3 Sense]  ←—Internet (WSS)—→  [Raspberry Pi 5]  ←—Ethernet—→  [Laptop]
+   Occhio + Orecchio                    Middleware AI                    Cervello Visivo
+   Mic PDM onboard                      STT (Whisper)                    VLM (Vision LLM)
+   Camera OV2640                        TTS (Piper)                      llama/qwen Q8
+   Display OLED                         FastAPI + WebSocket              llama.cpp + Vulkan
+   Speaker + Amp                        Cloudflare Tunnel                Solo su richiesta foto
+   2x Pulsanti                          Wake-on-LAN trigger
 ```
 
-**Principio guida:** Il Pi 5 è sempre acceso e gestisce tutto il traffico voce (5–8W).
+**Principio guida:** Il Pi 5 è sempre acceso e raggiungibile da qualsiasi rete tramite
+Cloudflare Tunnel — nessun IP statico, nessuna porta aperta sul router. Gli ESP32 si
+connettono all'endpoint pubblico `wss://vela.tuodominio.com` indipendentemente da dove si trovano.
 Il laptop si sveglia via Wake-on-LAN **solo** quando arriva una foto da analizzare,
-poi torna in sospensione. Questo massimizza la RAM DDR5 dedicata al VLM.
+poi torna in sospensione, massimizzando la RAM DDR5 dedicata al VLM.
 
 ---
 
@@ -54,9 +56,9 @@ eliminando il rischio di echo mic→speaker a costo zero.
 
 ---
 
-### Nodo Middleware — Il Coordinatore (Raspberry Pi 5, 8GB)
+### Nodo Middleware — Il Coordinatore (Raspberry Pi 5, 4GB + SSD 512GB)
 
-Server sempre acceso. Gestisce tutta la pipeline voce e orchestra le richieste verso il laptop.
+Server sempre acceso. Gestisce tutta la pipeline voce e orchestra le richieste verso il laptop. Con 4GB di RAM e SSD da 512GB, i modelli STT e TTS risiedono sull'SSD e vengono caricati in RAM all'avvio — nessun rischio di swap lento su MicroSD.
 
 | Ruolo | Strumento | Prestazioni attese |
 |---|---|---|
@@ -66,7 +68,9 @@ Server sempre acceso. Gestisce tutta la pipeline voce e orchestra le richieste v
 | Wake-on-LAN | `wakeonlan` Python lib | Sveglia il laptop solo per le foto |
 | Proxy VLM | Forward HTTP → laptop | Attende risposta in streaming |
 
-**Consumo tipico:** 5–8W. Ideale su alimentatore fisso o UPS da presa.
+**Nota RAM Pi 5 (4GB):** Faster-Whisper Small (~1.5GB) + Piper (~200MB) + FastAPI + OS
+lasciano ~1.5GB liberi — sufficiente per il middleware, ma senza margine per modelli aggiuntivi.
+Tutti i modelli AI pesanti restano esclusivamente sul laptop.
 
 ---
 
@@ -81,15 +85,12 @@ Dedicato **esclusivamente** al Vision Language Model. Non esegue STT né TTS.
 | RAM | 24 GB DDR5 5600MHz (~90 GB/s bandwidth) |
 | ZRAM | 10 GB (da escludere per i modelli AI, vedi ottimizzazioni) |
 
-**Distribuzione RAM con architettura a tre nodi:**
+**Distribuzione RAM sul laptop:**
 
 ```
-Con tutto sul laptop (vecchia arch):     Con Pi 5 come middleware:
-├── OS + Desktop:     ~3.5 GB           ├── OS + Desktop:      ~3.5 GB
-├── Whisper Small:    ~1.5 GB           ├── VLM (fino a):      ~20.0 GB  ← +13GB
-├── Piper TTS:        ~0.3 GB           └── Libera per iGPU:   molto generosa
-├── FastAPI:          ~0.5 GB
-└── VLM disponibile:  ~11.0 GB
+├── OS + Desktop:      ~3.5 GB
+├── VLM (fino a):      ~20.0 GB
+└── Libera per iGPU:   generosa (con UMA 8GB dedicati alla 780M)
 ```
 
 **Ottimizzazioni BIOS/OS:**
@@ -141,9 +142,99 @@ D0, D6, D9 rimangono disponibili per espansioni future
 
 ---
 
-## 4. Architettura del Protocollo e Flusso Dati
+## 4. Connettività Internet — Accesso Remoto degli ESP32
 
-### Uplink: ESP32 → Pi 5
+Gli ESP32 non si connettono tramite LAN locale ma tramite **WebSocket sicuro (WSS) su internet**,
+raggiungendo il Pi 5 attraverso un tunnel crittografato.
+
+### Soluzione Raccomandata: Cloudflare Tunnel
+
+Il Pi 5 esegue un daemon `cloudflared` che apre una connessione uscente verso i server Cloudflare.
+Nessuna porta da aprire sul router, nessun IP statico necessario.
+
+```
+ESP32 (qualsiasi rete)
+    │
+    ▼  wss://vela.tuodominio.com  (TLS, porta 443)
+Cloudflare Edge
+    │
+    ▼  tunnel crittografato
+cloudflared sul Pi 5
+    │
+    ▼  ws://localhost:8765  (locale)
+FastAPI WebSocket Server
+```
+
+**Setup sul Pi 5:**
+```bash
+# Installazione
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
+     -o /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared
+
+# Autenticazione e creazione tunnel
+cloudflared tunnel login
+cloudflared tunnel create vela
+cloudflared tunnel route dns vela vela.tuodominio.com
+
+# Avvio come servizio systemd
+cloudflared service install
+```
+
+**Configurazione `~/.cloudflared/config.yml`:**
+```yaml
+tunnel: <tunnel-id>
+credentials-file: /home/pi/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: vela.tuodominio.com
+    service: ws://localhost:8765
+  - service: http_status:404
+```
+
+**Sul firmware ESP32:** sostituire l'IP locale con l'endpoint pubblico:
+```cpp
+// Prima (LAN only):
+const char* ws_host = "192.168.1.100";
+const int   ws_port = 8765;
+const char* ws_path = "/ws";
+
+// Dopo (internet):
+const char* ws_host = "vela.tuodominio.com";
+const int   ws_port = 443;
+const char* ws_path = "/ws";
+bool        ws_ssl  = true;   // TLS obbligatorio
+```
+
+L'ESP32 supporta WebSocket TLS nativo tramite la libreria `ArduinoWebsockets`
+con certificato root CA di Cloudflare incluso nel firmware.
+
+### Autenticazione dei Nodi ESP32
+
+Poiché l'endpoint è pubblico, ogni ESP32 si autentica con un **token condiviso**
+inviato nell'header HTTP durante l'handshake WebSocket:
+
+```cpp
+client.setExtraHeaders("Authorization: Bearer YOUR_SECRET_TOKEN");
+```
+
+Il server FastAPI valida il token prima di accettare la connessione. Token diversi
+per ESP32 diversi permettono di identificare il nodo e gestire sessioni separate.
+
+### Alternative (Scenari Specifici)
+
+| Soluzione | Pro | Contro | Quando usarla |
+|---|---|---|---|
+| **Cloudflare Tunnel** | Zero config router, TLS automatico | Richiede dominio | **Default consigliato** |
+| **Tailscale** | VPN mesh, semplicissimo | ESP32 non supporta client nativo* | Solo con gateway ESP32↔Pi sulla stessa LAN |
+| **DDNS + port forward** | Nessun servizio terzo | IP dinamico, porta aperta | Router con DDNS integrato |
+| **VPS relay** | Controllo totale | Costo mensile, latenza extra | Deployment produzione |
+
+*\*Tailscale può essere usato tra Pi 5 e laptop; per gli ESP32 serve comunque un endpoint pubblico.*
+
+---
+
+## 5. Architettura del Protocollo e Flusso Dati
+
+### Uplink: ESP32 → Pi 5 (via Internet WSS)
 
 **Flusso Audio (Pulsante 1 tenuto premuto):**
 1. ESP32 attiva il mic PDM onboard e l'amplificatore viene silenziato (SD_MODE LOW)
@@ -199,7 +290,7 @@ per comunicare all'utente che il sistema sta elaborando.
 
 ---
 
-## 5. Stack Software AI
+## 6. Stack Software AI
 
 ### Nodo Pi 5
 
@@ -253,7 +344,7 @@ e offloadare più layer sulla 780M.
 
 ---
 
-## 6. Flusso Completo — Esempio con Foto
+## 7. Flusso Completo — Esempio con Foto
 
 ```
 Utente preme Pulsante 2 sull'ESP32
@@ -285,7 +376,7 @@ OLED mostra testo risposta in scorrimento
 
 ---
 
-## 7. Componenti Hardware — Lista Acquisti
+## 8. Componenti Hardware — Lista Acquisti
 
 | Componente | Dove trovarlo |
 |---|---|
@@ -295,13 +386,6 @@ OLED mostra testo risposta in scorrimento
 | OLED SSD1306 I2C 0.96" o 1.3" | AliExpress / Amazon |
 | 2x Pulsanti tattili 6mm | AliExpress / kit assortiti |
 | Power Bank USB-C con always-on | Anker PowerCore (serie Slim) |
-| Raspberry Pi 5 8GB + alimentatore ufficiale | RS Components / Farnell / PiShop |
-| MicroSD 32GB (per Pi 5) | Qualsiasi marca A2 (es. SanDisk) |
+| Raspberry Pi 5 4GB + alimentatore ufficiale | RS Components / Farnell / PiShop |
+| SSD 512GB (per Pi 5, via adattatore NVMe HAT) | Samsung 980 / Kingston NV2 |
 | Breadboard + jumper Dupont M-F | Kit standard |
-
----
-
-*VELA v2.0 — Aggiornamenti rispetto alla v1.0:*
-*Microfono esterno INMP441 sostituito dal PDM onboard; aggiunto display OLED SSD1306 I2C;*
-*introdotto Raspberry Pi 5 come middleware per STT+TTS; laptop dedicato esclusivamente al VLM;*
-*quantizzazione VLM aggiornata a Q8 grazie alla maggiore RAM disponibile.*
