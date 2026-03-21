@@ -1,0 +1,39 @@
+# ─── Model weights (can be gigabytes) ───────────────────────────────────────
+inference/models/*.gguf
+inference/models/*.bin
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.env
+
+# ─── PlatformIO (ESP32 firmware) ─────────────────────────────────────────────
+firmware/.pio/
+firmware/.pioenvs/
+firmware/.piolibdeps/
+
+# ─── Android ─────────────────────────────────────────────────────────────────
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+android/*.keystore
+android/*.jks
+android/keystore.properties
+
+# ─── llama.cpp build artifacts ───────────────────────────────────────────────
+inference/build/
+
+# ─── OS junk ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
