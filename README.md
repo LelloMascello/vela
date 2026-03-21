@@ -1,190 +1,101 @@
 # VELA — Voice Edge Local Assistant
 
-> A fully local, privacy-first multimodal AI assistant built on a three-node edge-to-server architecture.
-> No cloud dependency. No data leaves the local network.
+A fully local, privacy-first multimodal AI assistant. VELA listens via voice, sees via camera, and responds via synthesised speech. No cloud services are involved; all processing occurs within the local network.
+
+Developed as a *Tesina di Maturità* (Italian high school final examination project).
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Hardware Architecture](#hardware-architecture)
+- [Software Stack](#software-stack)
+- [Repository Structure](#repository-structure)
+- [Communication Protocol](#communication-protocol)
+- [Data Flows](#data-flows)
+- [AI Models](#ai-models)
+- [Pinout Reference](#pinout-reference)
+- [Error Handling](#error-handling)
+- [OLED Display](#oled-display)
+- [Android Client](#android-client)
+- [Latency Budget](#latency-budget)
+- [Setup and Deployment](#setup-and-deployment)
 
 ---
 
 ## Overview
 
-VELA is an embedded AI assistant capable of processing voice input and visual input in real time.
-The system captures audio and images at the edge, performs speech recognition and text-to-speech synthesis
-on a dedicated middleware node, and delegates vision-language inference to a local server.
-The entire pipeline operates on a local Wi-Fi network, with a measured end-to-end latency under two seconds.
+VELA is composed of three hardware nodes working in concert:
 
-The project explores the intersection of embedded systems, edge computing, and on-device AI,
-demonstrating that multimodal AI assistants can be deployed without relying on external cloud services.
+| Node | Hardware | Role |
+|---|---|---|
+| Node 1 | Seeed Studio XIAO ESP32-S3 Sense | Edge device — user input/output |
+| Node 2 | Raspberry Pi 5, 8 GB RAM | Middleware — always on, handles STT and TTS |
+| Node 3 | Laptop (Ryzen 7 8840HS, Radeon 780M) | Inference server — on-demand vision language model |
+
+The system also supports an Android application as an alternative client, implementing identical functionality to the ESP32 over the same WebSocket protocol.
 
 ---
 
-## Architecture
+## Hardware Architecture
 
-The system is composed of three hardware nodes, each with a distinct and non-overlapping responsibility.
+### Node 1 — Edge Device (ESP32-S3)
 
-```
-[ESP32-S3 Sense]  ←— Wi-Fi LAN —→  [Raspberry Pi 5]  ←— Ethernet —→  [Laptop / Server]
-  Edge Node                          Middleware Node                     Inference Node
-  Mic · Camera · OLED                STT · TTS · WebSocket              Vision LLM (VLM)
-  Speaker · Buttons                  Always-on (5–8W)                   On-demand via WoL
-```
+- **MCU:** Seeed Studio XIAO ESP32-S3 Sense
+  - Integrated OV2640 camera
+  - Onboard PDM microphone (internal GPIO 41/42, uses no header pins)
+  - 8 MB PSRAM for audio and image buffering
+  - MicroSD slot
+- **Audio output:** MAX98357A I2S Class-D amplifier (3.2 W) with passive 3 W 4 Ω/8 Ω speaker. The `SD_MODE` pin is connected to a GPIO for software mute during recording, preventing echo without additional hardware.
+- **Display:** SSD1306 OLED 0.96" I2C
+- **Input:** two tactile push-buttons
+  - Button 1 (D1): Push-to-Talk
+  - Button 2 (D2): Photo capture
+- **Power:** USB-C power bank (always-on model recommended)
+- **Firmware:** single-loop state machine (Arduino framework, PlatformIO)
 
-### Node 1 — Edge Device (XIAO ESP32-S3 Sense)
+The ESP32 connects to the Pi 5 on the first user button press and auto-reconnects silently in the background if the WebSocket connection drops.
 
-The edge node is the physical interface between the user and the system.
-It captures audio via the onboard PDM microphone and images via the integrated OV2640 camera.
-A push-to-talk button initiates audio capture; a second button triggers a still image.
-Audio is buffered in the 8MB PSRAM and streamed in chunks over WebSocket.
-Images are JPEG-encoded and transmitted as Base64 JSON payloads.
-An I2C OLED display provides real-time visual feedback: recording state, processing indicator,
-and a scrolling transcription of the assistant's response.
-Audio output is handled by a MAX98357A Class-D I2S amplifier connected to a passive speaker.
-The amplifier's `SD_MODE` pin is software-controlled to mute the output during recording,
-preventing microphone feedback.
+### Node 2 — Middleware (Raspberry Pi 5)
 
-### Node 2 — Middleware (Raspberry Pi 5, 8 GB)
-
-The middleware node runs continuously at low power and manages the full voice pipeline.
-It hosts a FastAPI WebSocket server, receives audio and image data from the edge node,
-and coordinates the processing pipeline.
-
-Speech-to-Text is handled by Faster-Whisper (Base or Small), running on the ARM CPU.
-Text-to-Speech synthesis is performed by Piper TTS, using the `it_IT-riccardo-x_low` acoustic model.
-Responses are streamed sentence-by-sentence to the edge node as audio begins playing
-while synthesis of the remainder continues in parallel.
-
-When an image arrives, the middleware checks whether the inference server is reachable.
-If not, it transmits a Wake-on-LAN magic packet to power on the laptop, then forwards the request.
-A pre-generated audio filler ("Un momento...") is sent to the edge node during any processing delay
-exceeding 1.5 seconds, ensuring the user receives immediate feedback.
+- **Always on** (~5–8 W)
+- Runs a FastAPI WebSocket server accepting connections from multiple clients concurrently. Each client gets an independent async handler coroutine.
+- A separate inference worker process holds a shared `asyncio.Queue`. Handler coroutines push jobs into the queue; the worker processes them sequentially and routes results back to the originating handler.
+- Sends a Wake-on-LAN magic packet to the laptop when a vision request arrives.
+- Plays an audio filler clip ("Un momento...") if processing delay exceeds 1.5 seconds.
+- All request handling is stateless: no conversation history is retained between requests.
 
 ### Node 3 — Inference Server (Laptop)
 
-The laptop is powered on exclusively when vision inference is required.
-Because STT and TTS have been offloaded to the Raspberry Pi 5, the laptop's 24 GB of DDR5
-are available almost entirely for the Vision Language Model.
+- **On-demand** — sleeps when idle, woken by the Pi 5 via Wake-on-LAN.
+- Runs a llama.cpp WebSocket server with Vulkan backend.
+- Communicates with the Pi 5 via WebSocket, streaming tokens as they are generated. The Pi 5 collects the full response before passing it to TTS.
+- BIOS UMA Frame Buffer set to 8 GB for the integrated Radeon 780M.
+- The `--mlock` flag pins the model in physical RAM, preventing paging to ZRAM under memory pressure.
 
-The VLM runs under `llama.cpp` with Vulkan backend, which provides stable GPU acceleration
-on the AMD Radeon 780M integrated GPU (RDNA3 architecture, gfx1103).
-With a UMA frame buffer of 8 GB allocated in the BIOS, the model's layers can be fully
-offloaded to the iGPU, improving token throughput significantly over CPU-only inference.
-The `--mlock` flag ensures the model is pinned to physical RAM and never paged to ZRAM.
-
----
-
-## Hardware Components
-
-| Component | Model | Node |
-|---|---|---|
-| Microcontroller | Seeed Studio XIAO ESP32-S3 Sense | Edge |
-| Microphone | Onboard PDM (GPIO 41/42, internal) | Edge |
-| Camera | OV2640 (integrated on XIAO) | Edge |
-| Amplifier | MAX98357A I2S Class-D, 3.2W | Edge |
-| Speaker | Passive 3W 4Ω or 8Ω | Edge |
-| Display | SSD1306 OLED 0.96" I2C | Edge |
-| Buttons | 2× tactile push-button | Edge |
-| Power | USB-C Power Bank | Edge |
-| Middleware | Raspberry Pi 5 8GB | Middleware |
-| Storage (Pi) | MicroSD 32GB Class A2 | Middleware |
-| Inference | Laptop — Ryzen 7 8840HS, 24GB DDR5, Radeon 780M | Server |
-
----
-
-## Pinout — XIAO ESP32-S3 Sense
-
-The onboard PDM microphone uses internal GPIO 41/42 and does not occupy any header pins.
-The I2S bus is therefore output-only, connecting exclusively to the amplifier.
-
-### I2S Output (MAX98357A Amplifier)
-
-| XIAO Pin | MAX98357A Pin | Signal |
-|---|---|---|
-| D7 | BCLK | Bit Clock |
-| D8 | LRC | Word Select |
-| D10 | DIN | Audio Data |
-| D3 | SD_MODE | Mute control (GPIO) |
-
-### I2C Display (SSD1306)
-
-| XIAO Pin | SSD1306 Pin | Signal |
-|---|---|---|
-| D4 | SDA | Data |
-| D5 | SCL | Clock |
-
-### Buttons
-
-| XIAO Pin | Function | Wiring |
-|---|---|---|
-| D1 | Push-to-Talk (audio) | One leg to GND |
-| D2 | Photo capture | One leg to GND |
-
-Both buttons are configured as `INPUT_PULLUP` in firmware.
-
-### Power
-
-| XIAO Pin | Destination |
-|---|---|
-| 3V3 | VIN (MAX98357A), VCC (SSD1306) |
-| GND | All module grounds |
-
-Free pins available for future expansion: D0, D6, D9.
+**Recommended llama.cpp flags:**
+```
+--n-gpu-layers 32
+--ctx-size 2048
+--batch-size 512
+--mlock
+```
 
 ---
 
 ## Software Stack
 
-### Edge Firmware (ESP32-S3)
-
-- Language: C++ (Arduino framework via PlatformIO)
-- Audio capture: ESP-IDF PDM driver (onboard mic)
-- Audio playback: ESP-IDF I2S driver (MAX98357A)
-- Image capture: ESP32 Camera library (OV2640)
-- Display: Adafruit SSD1306 / U8g2
-- Network: `WebSocketsClient` library over Wi-Fi
-
-### Middleware (Raspberry Pi 5)
-
-- Runtime: Python 3.11+
-- Server: FastAPI + `websockets`
-- STT: `faster-whisper` (CTranslate2 backend)
-- TTS: `piper-tts` (`it_IT-riccardo-x_low` model)
-- Wake-on-LAN: `wakeonlan` Python library
-- Async orchestration: `asyncio`
-
-### Inference Server (Laptop)
-
-- Runtime: `llama.cpp` (Vulkan build)
-- Model: `qwen2-vl-7b-instruct-Q8_0.gguf` (recommended) or `llama3.2-vision-11b-Q8`
-- Acceleration: Vulkan backend targeting AMD gfx1103
-- Endpoint: HTTP REST, consumed by the Pi 5 middleware
-
----
-
-## Communication Protocol
-
-All communication between the edge node and the middleware uses a persistent WebSocket connection.
-Each message carries a `type` field for routing.
-
-```json
-{ "type": "audio_chunk", "data": "<base64_pcm>", "seq": 42 }
-{ "type": "audio_end",   "sample_rate": 16000, "channels": 1 }
-{ "type": "image",       "data": "<base64_jpeg>", "prompt": "Descrivi cosa vedi" }
-{ "type": "control",     "cmd": "reset" }
-```
-
-Downstream audio is sent as raw PCM/WAV chunks. The edge node begins playback
-as soon as the first chunk arrives, while the server continues generating the remainder.
-
----
-
-## AI Models
-
-| Pipeline Stage | Model | Node | Latency |
-|---|---|---|---|
-| Speech-to-Text | Faster-Whisper Base/Small | Pi 5 (CPU) | 400–700 ms |
-| Vision-Language | qwen2-vl:7b Q8 | Laptop (iGPU) | 800–2000 ms (TTFT) |
-| Text-to-Speech | Piper TTS it_IT-riccardo-x_low | Pi 5 (CPU) | < 200 ms |
-
-**Total perceived latency:** approximately 1.5–3 seconds from button release to first audio output.
+| Layer | Tool | Node |
+|---|---|---|
+| Firmware | C++ / PlatformIO (Arduino framework) | ESP32 |
+| WebSocket server | FastAPI + websockets | Pi 5 |
+| STT | faster-whisper (CTranslate2) — Small model | Pi 5 |
+| TTS | piper-tts — `it_IT-riccardo-x_low` | Pi 5 |
+| Wake-on-LAN | wakeonlan (Python) | Pi 5 |
+| VLM runtime | llama.cpp (Vulkan backend) | Laptop |
+| VLM model | qwen2-vl:7b Q8 | Laptop |
+| Android client | Kotlin, OkHttp WebSocket, AudioTrack | Android device |
 
 ---
 
@@ -192,27 +103,234 @@ as soon as the first chunk arrives, while the server continues generating the re
 
 ```
 vela/
-├── firmware/               # ESP32-S3 PlatformIO project
+├── firmware/          # ESP32 firmware (C++, PlatformIO)
 │   ├── src/
-│   │   ├── main.cpp
-│   │   ├── audio.cpp
-│   │   ├── camera.cpp
-│   │   └── display.cpp
+│   │   └── main.cpp
 │   └── platformio.ini
-├── middleware/             # Raspberry Pi 5 Python server
-│   ├── server.py           # FastAPI WebSocket server
-│   ├── stt.py              # Faster-Whisper wrapper
-│   ├── tts.py              # Piper TTS wrapper
-│   └── wol.py              # Wake-on-LAN utility
-├── inference/              # Laptop-side llama.cpp config
-│   └── start_server.sh     # Launch script with optimized flags
-├── docs/
-│   ├── architecture.md
-│   ├── pinout.md
-│   └── models.md
-└── README.md
+│
+├── server/            # Pi 5 server (Python)
+│   ├── ws_server.py       # FastAPI WebSocket server, connection pool
+│   ├── inference_worker.py # STT + TTS worker process, asyncio queue
+│   └── requirements.txt
+│
+├── inference/         # Laptop inference configuration
+│   ├── start_server.sh    # llama.cpp launch script with flags
+│   └── models/            # Model weights (not committed to git)
+│
+├── android/           # Android application (Kotlin)
+│   └── app/
+│       └── src/
+│
+└── docs/              # Tesina documentation, diagrams, schematics
 ```
 
 ---
 
-*VELA — Voice Edge Local Assistant*
+## Communication Protocol
+
+All clients (ESP32 and Android) communicate with the Pi 5 via a persistent WebSocket connection. Every message is a JSON object with a `type` field.
+
+### Client → Pi 5
+
+```json
+{ "type": "audio_chunk", "data": "<base64_pcm>", "seq": 42 }
+```
+Sent continuously while the user holds the Push-to-Talk button. Contains a sequential chunk of raw PCM audio (16 kHz, mono, 16-bit).
+
+```json
+{ "type": "audio_end", "sample_rate": 16000, "channels": 1 }
+```
+Sent when the PTT button is released. Signals that the full audio has been transmitted and STT can proceed.
+
+```json
+{ "type": "image", "data": "<base64_jpeg>", "prompt": "<transcribed_voice_prompt>" }
+```
+Sent after the user takes a photo and speaks a voice prompt. The Pi 5 waits for the voice prompt transcription before dispatching this message to the laptop.
+
+```json
+{ "type": "control", "cmd": "reset" }
+```
+Resets the current session state on the Pi 5.
+
+### Pi 5 → Client
+
+```json
+{ "type": "audio_chunk", "data": "<base64_pcm_or_wav>", "seq": 5 }
+```
+A chunk of synthesised TTS audio to be played back immediately. Streamed sequentially.
+
+```json
+{ "type": "audio_end" }
+```
+Signals that TTS playback is complete.
+
+```json
+{ "type": "status", "state": "processing" }
+```
+Optional status update for display purposes (e.g., OLED state updates).
+
+### Pi 5 → Laptop
+
+Communication between the Pi 5 and the laptop uses a WebSocket connection to the llama.cpp server endpoint. The Pi 5 sends the image and prompt; the laptop streams tokens back. The Pi 5 accumulates the full response before dispatching to Piper TTS.
+
+---
+
+## Data Flows
+
+### Voice flow
+
+1. User holds Button 1 (PTT). Firmware mutes the MAX98357A via `SD_MODE`.
+2. PDM microphone captures audio. ESP32 encodes PCM chunks and streams them over WebSocket.
+3. User releases PTT. ESP32 sends `audio_end`.
+4. Pi 5 inference worker runs Whisper STT (400–700 ms).
+5. Pi 5 generates a text response (no VLM involved for voice-only requests).
+6. Piper TTS synthesises the response (< 200 ms to first chunk).
+7. Pi 5 streams PCM audio chunks back to the client.
+8. Client plays audio via MAX98357A (ESP32) or `AudioTrack` (Android). `SD_MODE` is unmuted.
+
+### Vision flow
+
+1. User presses Button 2. OV2640 captures a JPEG image. OLED shows a waiting indicator.
+2. Pi 5 receives the image and waits.
+3. User holds Button 1 and speaks a prompt describing what they want to know about the image.
+4. PTT released. Pi 5 transcribes the prompt via Whisper STT.
+5. Pi 5 bundles the image (base64 JPEG) and the transcribed prompt into a single `image` message.
+6. Pi 5 sends a Wake-on-LAN packet to the laptop if it is sleeping.
+7. Pi 5 sends the request to the laptop via WebSocket.
+8. llama.cpp streams tokens back. Pi 5 accumulates the full response.
+9. Piper TTS synthesises the full response.
+10. Pi 5 streams PCM audio back to the client.
+
+---
+
+## AI Models
+
+| Stage | Model | Quantisation | RAM usage | Speed | Node |
+|---|---|---|---|---|---|
+| STT | Faster-Whisper Small | — | ~1.5 GB | 400–700 ms | Pi 5 |
+| VLM | qwen2-vl:7b | Q8 | ~8 GB | 14–20 t/s | Laptop |
+| VLM (alt) | llama3.2-vision:11b | Q8 | ~11 GB | 8–12 t/s | Laptop |
+| VLM (alt) | InternVL2-26B | Q4 | ~19 GB | 4–7 t/s | Laptop |
+| TTS | Piper it_IT-riccardo-x_low | — | < 200 MB | < 200 ms | Pi 5 |
+
+The recommended VLM is `qwen2-vl:7b Q8`, which provides the best speed-to-quality balance given the available hardware. STT and TTS are offloaded entirely to the Pi 5, freeing approximately 13 GB of laptop RAM for a higher-quality quantisation level.
+
+Vulkan is used as the llama.cpp backend instead of ROCm due to greater stability on the RDNA3 gfx1103 integrated GPU.
+
+---
+
+## Pinout Reference
+
+| Pin | Connected to | Function |
+|---|---|---|
+| D7 | MAX98357A BCLK | I2S bit clock |
+| D8 | MAX98357A LRC | I2S word select |
+| D10 | MAX98357A DIN | I2S audio data out |
+| D3 | MAX98357A SD_MODE | Amplifier mute (software-controlled) |
+| D4 | SSD1306 SDA | I2C data |
+| D5 | SSD1306 SCL | I2C clock |
+| D1 | Button 1 | Push-to-Talk (INPUT_PULLUP → GND) |
+| D2 | Button 2 | Photo capture (INPUT_PULLUP → GND) |
+| 3V3 | VIN (amp), VCC (OLED) | Power |
+| GND | All module grounds | Ground |
+| D0, D6, D9 | — | Reserved for future use |
+
+The onboard PDM microphone uses internal GPIO 41/42 and does not occupy any header pins.
+
+---
+
+## Error Handling
+
+All user-facing errors are communicated through audio, keeping the interaction model consistent.
+
+| Failure | Behaviour |
+|---|---|
+| WebSocket drop (ESP32 ↔ Pi 5) | Automatic silent reconnection in the background |
+| Wake-on-LAN timeout (laptop unreachable) | Pi 5 plays a TTS error clip |
+| STT returns empty or invalid transcription | Pi 5 plays "Non ho capito" audio clip |
+
+---
+
+## OLED Display
+
+The SSD1306 display shows four categories of information:
+
+- **System state** — one of: `idle`, `recording`, `processing`, `speaking`
+- **Response text** — scrolling display of the last synthesised response
+- **Connection status** — IP address of the Pi 5, WebSocket connection indicator
+- **Language** — active language, as set at startup
+
+---
+
+## Android Client
+
+The Android application provides identical functionality to the ESP32 hardware client, implemented natively in Kotlin.
+
+- WebSocket communication via OkHttp, using the same protocol described above.
+- PTT: hold button streams PCM audio chunks; release sends `audio_end`.
+- Photo + prompt: camera capture followed by a spoken prompt, bundled into a single `image` message.
+- TTS audio played back via `AudioTrack`.
+- Settings screen for server IP address and language selection at startup.
+
+Multiple clients (ESP32 and Android) may be connected to the Pi 5 simultaneously. Each connection is handled by an independent coroutine; inference requests are serialised through a shared queue.
+
+---
+
+## Latency Budget
+
+Measured with the laptop already awake and on a local network.
+
+| Phase | Estimated time |
+|---|---|
+| Audio transmission over LAN | ~10 ms |
+| STT — Whisper Small on Pi 5 | 400–700 ms |
+| Wake-on-LAN + laptop boot (if sleeping) | ~5 s |
+| VLM time-to-first-token | 800–2000 ms |
+| TTS first chunk — Piper | < 200 ms |
+| Audio transmission to client | ~20 ms |
+| **Total perceived latency (laptop awake)** | **~1.5–3 seconds** |
+
+---
+
+## Setup and Deployment
+
+### Node 2 — Pi 5
+
+```bash
+pip install fastapi uvicorn websockets faster-whisper piper-tts wakeonlan
+uvicorn server.ws_server:app --host 0.0.0.0 --port 8765
+python server/inference_worker.py
+```
+
+### Node 3 — Laptop
+
+```bash
+# Build llama.cpp with Vulkan backend
+cmake -B build -DGGML_VULKAN=ON
+cmake --build build --config Release
+
+# Start the server
+./build/bin/llama-server \
+  --model ./inference/models/qwen2-vl-7b-q8.gguf \
+  --n-gpu-layers 32 \
+  --ctx-size 2048 \
+  --batch-size 512 \
+  --mlock \
+  --host 0.0.0.0 \
+  --port 8080
+```
+
+### Node 1 — ESP32
+
+```bash
+cd firmware
+pio run --target upload
+```
+
+Configure the Pi 5 IP address and language selection in `firmware/src/main.cpp` before flashing, or expose them as compile-time flags in `platformio.ini`.
+
+---
+
+## License
+
+To be defined.
