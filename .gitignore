@@ -2,6 +2,10 @@
 inference/models/*.gguf
 inference/models/*.bin
 
+# ─── llama.cpp build artifacts ───────────────────────────────────────────────
+inference/build/
+inference/llama-server
+
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
