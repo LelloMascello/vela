@@ -5,6 +5,8 @@ inference/models/*.bin
 # ─── llama.cpp build artifacts ───────────────────────────────────────────────
 inference/build/
 inference/llama-server
+inference/*.so
+inference/*.so.*
 
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
