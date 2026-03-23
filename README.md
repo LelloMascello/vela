@@ -17,7 +17,7 @@ Developed as a *Tesina di Maturità* (Italian high school final examination proj
 - [AI Models](#ai-models)
 - [Pinout Reference](#pinout-reference)
 - [Error Handling](#error-handling)
-- [OLED Display](#oled-display)
+- [TFT Display](#tft-display)
 - [Storage and Retrieval](#storage-and-retrieval)
 - [Multi-User System](#multi-user-system)
 - [Android Client](#android-client)
@@ -36,13 +36,13 @@ VELA is composed of three hardware nodes working in concert:
 | Node 2 | Raspberry Pi 5, 4 GB RAM | Middleware — always on, wake word detection, STT, TTS, storage |
 | Node 3 | Laptop (Ryzen 7 8840HS, Radeon 780M) | Inference server — on-demand vision language model |
 
-VELA is always listening. Interaction is initiated entirely by voice — there are no buttons. Saying **"Hey Vela"** activates the assistant; saying **"Hey Vela, take a photo"** triggers the vision flow. After every response, an active-listening window allows the user to continue the conversation naturally, say **"Save this"** to store the last exchange on the Pi 5's SSD, or simply stay silent to end the session.
+VELA is always listening. Every interaction follows the same structure: the user says **"Hey Vela, \<query\>"** — wake phrase and query in a single utterance. There are no buttons and no separate listening prompt. Saying **"Hey Vela, take a photo"** triggers the vision flow. After every response, an 8-second active-listening window allows the user to continue the conversation with the same **"Hey Vela, \<query\>"** format. If the window expires without a new request, conversation history is cleared.
 
-VELA supports multi-turn conversations. Each **"Hey Vela"** starts a new conversation and clears the previous history. Within a single conversation, the assistant retains the full exchange as context for follow-up questions. History is held in RAM on the Pi 5 and is only cleared when a new wake word is detected — not on timeout or disconnect.
+VELA supports multi-turn conversations. Each **"Hey Vela, \<query\>"** in the follow-up window adds to the history and sends the full context to the inference layer. History is held in RAM on the Pi 5 and is cleared only when the 8-second window expires without a new utterance — not on mid-window wake words or saves.
 
-The system supports multiple users. Each client authenticates with a username and password on connection; all saved exchanges are stored per-user and are only accessible to their owner. The OLED display stays off when idle and lights up only during speech playback, showing the response text as subtitles.
+Within the follow-up window, saying **"Hey Vela, save this"** writes the last exchange to the Pi 5's SSD and keeps the window open, allowing the conversation to continue.
 
-The system also supports an Android application as an alternative client. The Android app mirrors the ESP32 behaviour exactly: always-on microphone, wake word detection pipeline, camera-triggered vision flow, and the same authentication and save functionality.
+The system supports multiple users. Each client authenticates with a username and password on connection; all saved exchanges are stored per-user and are only accessible to their owner. The TFT display stays off when idle and lights up during speech playback, showing the response text as subtitles.
 
 ---
 
@@ -52,11 +52,10 @@ The system also supports an Android application as an alternative client. The An
 
 - **MCU:** Seeed Studio XIAO ESP32-S3 Sense
   - Integrated OV2640 camera
-  - Onboard PDM microphone (internal GPIO 41/42, uses no header pins)
   - 8 MB PSRAM for audio and image buffering
-  - MicroSD slot
-- **Audio output:** MAX98357A I2S Class-D amplifier (3.2 W) with passive 3 W 4 Ω/8 Ω speaker. The `SD_MODE` pin is driven by the firmware state machine — muted during listening to prevent feedback, unmuted only during TTS playback.
-- **Display:** SSD1306 OLED 0.96" I2C — off when idle, subtitle display during speech, camera viewfinder during the photo countdown.
+- **Microphone:** INMP441 I2S MEMS omnidirectional microphone — external module wired via I2S. Replaces the onboard PDM microphone for improved audio quality and signal level.
+- **Audio output:** MAX98357A I2S Class-D amplifier (3 W) with passive 3 W 4 Ω speaker. The `SD_MODE` pin is driven by the firmware state machine — muted during listening to prevent feedback, unmuted only during TTS playback.
+- **Display:** ILI9341 SPI TFT LCD 2.4" (240×320) — off when idle, subtitle display during speech, camera viewfinder during the photo countdown.
 - **Power:** USB-C power bank (always-on model recommended)
 - **Firmware:** state machine (Arduino framework, PlatformIO)
 
@@ -68,10 +67,10 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 
 - **Always on** (~5–8 W)
 - Runs a FastAPI server exposing both a WebSocket endpoint (real-time client communication) and an authenticated HTTP REST API (save retrieval).
-- Runs **openWakeWord** continuously as a first-stage keyword spotter. Whisper STT is invoked only after the wake word is confirmed or during the post-response follow-up window, keeping CPU usage low.
+- Runs **openWakeWord** continuously as a first-stage keyword spotter. Whisper STT is invoked only after the wake word is confirmed, keeping CPU usage low.
 - Authenticates each client on connection against a local SQLite user database before accepting any audio stream.
-- Maintains a per-session **conversation history buffer** — a list of `{role, content}` pairs representing the current conversation. The buffer is passed to the inference layer on every turn, enabling multi-turn exchanges. It is cleared only when a new "Hey Vela" wake word is detected. History is capped at the last 8 turns to stay within the VLM context window; older turns are silently dropped.
-- Manages per-user save storage on the SSD: one JSON file per saved exchange, organised in per-user directories.
+- Maintains a per-session **conversation history buffer** — a list of `{role, content}` pairs representing the current conversation. The buffer is passed to the inference layer on every turn, enabling multi-turn exchanges. It is cleared when the post-response 8-second follow-up window expires without a new utterance. History is capped at the last 8 turns to stay within the VLM context window; older turns are silently dropped.
+- Manages per-user save storage on the SSD: one folder per saved exchange, containing a metadata JSON file and (for vision saves) the captured JPEG, organised in per-user directories.
 - A separate inference worker process holds a shared `asyncio.Queue`. Handler coroutines push jobs into the queue; the worker processes them sequentially and routes results back to the originating handler.
 - Sends a Wake-on-LAN magic packet to the laptop when a vision request arrives.
 - Plays an audio filler clip ("Un momento...") if processing delay exceeds 1.5 seconds.
@@ -105,7 +104,7 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 | STT | faster-whisper (CTranslate2) — Small model, VAD enabled | Pi 5 |
 | TTS | piper-tts — `it_IT-riccardo-x_low` | Pi 5 |
 | User database | SQLite (via Python `sqlite3`) | Pi 5 |
-| Save storage | JSON files on SSD, per-user directory tree | Pi 5 |
+| Save storage | Per-exchange folder (JSON + optional JPEG) on SSD | Pi 5 |
 | Wake-on-LAN | wakeonlan (Python) | Pi 5 |
 | VLM runtime | llama.cpp (Vulkan backend) | Laptop |
 | VLM model | qwen2-vl:7b Q8 | Laptop |
@@ -126,7 +125,7 @@ vela/
 │   ├── ws_server.py           # FastAPI WebSocket + HTTP server
 │   ├── inference_worker.py    # Wake word + STT + TTS worker, asyncio queue
 │   ├── auth.py                # User authentication, SQLite user DB
-│   ├── storage.py             # Per-user save logic, JSON file management
+│   ├── storage.py             # Per-user save logic, folder management
 │   ├── manage_users.py        # CLI tool for creating/removing user accounts
 │   ├── wake_word/             # openWakeWord model and config
 │   └── requirements.txt
@@ -170,7 +169,7 @@ Sent **continuously** while the client is active. Contains a sequential chunk of
 ```json
 { "type": "image", "data": "<base64_jpeg>" }
 ```
-Sent after the photo countdown completes. No voice prompt is required — the VLM is asked to describe the image automatically.
+Sent after the photo countdown completes. The VLM is asked to describe the image automatically.
 
 ```json
 { "type": "control", "cmd": "reset" }
@@ -187,17 +186,17 @@ Instructs the client to enter camera preview mode and begin the 3–2–1 countd
 ```json
 { "type": "control", "cmd": "save_window_open" }
 ```
-Sent after `audio_end` to notify the client that the post-response window is now active. The client keeps the OLED on (still showing the last response) and awaits speech, a save command, or a timeout.
+Sent after `audio_end` to notify the client that the post-response 8-second window is now active. The client keeps the display on (still showing the last response) and awaits a new "Hey Vela, \<query\>" utterance.
 
 ```json
 { "type": "control", "cmd": "save_window_closed" }
 ```
-Sent when the window expires without any detected speech. Client turns OLED off and returns to idle.
+Sent when the window expires without any detected speech. Client turns display off, history is cleared, and the system returns to idle.
 
 ```json
 { "type": "control", "cmd": "save_confirmed" }
 ```
-Sent after the Pi 5 successfully writes the last exchange to disk. The Pi 5 also plays a short TTS clip ("Salvato").
+Sent after the Pi 5 successfully writes the last exchange to disk. The Pi 5 also plays a short TTS clip ("Salvato"). The follow-up window immediately reopens.
 
 ```json
 { "type": "audio_chunk", "data": "<base64_pcm_or_wav>", "seq": 5 }
@@ -220,22 +219,35 @@ Authentication uses HTTP Basic Auth with the same username and SHA-256 password 
 
 ```
 GET  /saves              → list all saves for the authenticated user
-GET  /saves/{id}         → retrieve a specific saved exchange
-DELETE /saves/{id}       → delete a specific save
+GET  /saves/{id}         → retrieve a specific saved exchange (JSON + image URL if present)
+DELETE /saves/{id}       → delete a specific save (removes the folder and all its contents)
+GET  /saves/{id}/image   → retrieve the captured JPEG for a vision save
 ```
 
-Each save is returned as:
+Each text save is returned as:
 
 ```json
 {
   "id": "2026-03-22T14-30-00",
   "timestamp": "2026-03-22T14:30:00",
+  "type": "voice",
   "question": "What is the boiling point of water?",
   "response": "Water boils at 100 degrees Celsius at sea level."
 }
 ```
 
-For vision exchanges, the `question` field contains the VLM's description prompt and `response` contains the description. Saved image data is not stored; only the text exchange is retained.
+Each vision save includes an additional `image_url` field pointing to the `/saves/{id}/image` endpoint:
+
+```json
+{
+  "id": "2026-03-22T16-45-11",
+  "timestamp": "2026-03-22T16:45:11",
+  "type": "vision",
+  "question": "Describe what you see in this image.",
+  "response": "The image shows a cluttered desk with ...",
+  "image_url": "/saves/2026-03-22T16-45-11/image"
+}
+```
 
 ### Pi 5 → Laptop
 
@@ -269,63 +281,66 @@ POWER ON
 
 ### Conversation lifecycle
 
-Each "Hey Vela" starts a new conversation. History is cleared at that moment and accumulated for the lifetime of the conversation. It is never cleared on timeout or disconnect — only on the next "Hey Vela".
+Every interaction — whether the first turn or a follow-up — uses the same **"Hey Vela, \<query\>"** structure. The wake phrase and the query are always in the same utterance. There is no separate "Ti ascolto" prompt; the query is captured inline.
+
+History is accumulated across turns for the lifetime of a conversation. It is cleared only when the 8-second follow-up window expires without a new utterance. Saves do not close the window or clear history.
 
 ```
-Hey Vela                      → clear history, play "Ti ascolto", listen for query
-Hey Vela [query]              → clear history, no "Ti ascolto", process [query] directly
-follow-up speech (in-window)  → append to history, full pipeline, new save window opens
-Hey Vela [query] (in-window)  → post-STT: clear history, no "Ti ascolto", process [query]
-Save this (in-window)         → write last exchange to disk, window closes, history retained
-silence × 8 s                 → window closes, history retained in RAM
+[IDLE]
+  Hey Vela, <query>              → process query, generate response, history starts
+  Hey Vela, take a photo         → vision flow
+
+[POST-RESPONSE WINDOW — 8 s timer running]
+  Hey Vela, <query>              → reset timer, append to history, full pipeline, new window opens
+  Hey Vela, take a photo         → reset timer, vision flow, new window opens
+  Hey Vela, save this            → save last exchange to SSD, confirm, window reopens immediately
+  silence × 8 s                  → clear history, display off → return to IDLE
 ```
 
 ### Voice flow
 
-1. ESP32 streams PCM chunks to the Pi 5 continuously. Amplifier is muted via `SD_MODE`.
+1. ESP32 streams PCM chunks to the Pi 5 continuously via the INMP441. Amplifier is muted via `SD_MODE`.
 2. Pi 5 openWakeWord detector processes each chunk in real time.
-3. Wake word **"Hey Vela"** detected → Pi 5 clears conversation history → sends `{ "type": "status", "state": "wake_word_detected" }`.
-4. Pi 5 plays "Ti ascolto" confirmation clip.
-5. Pi 5 enables faster-whisper with VAD. Whisper records until 1.5 s of silence, then transcribes (400–700 ms).
-6. Transcription is checked for content:
-   - **Begins with "Hey Vela"** (mid-window wake) → clear history, strip wake phrase, treat remainder as new query if present; otherwise play "Ti ascolto" and listen again.
-   - **Photo intent** ("fai una foto", "take a photo", etc.) → vision flow (see below).
+3. Wake word **"Hey Vela"** detected → Pi 5 sends `{ "type": "status", "state": "wake_word_detected" }`. If a follow-up window is open, its timer is cancelled.
+4. Pi 5 enables faster-whisper with VAD. Whisper records from the same audio stream, capturing the in-progress utterance until 1.5 s of silence, then transcribes (400–700 ms). The transcription includes the full "Hey Vela, \<query\>" string; the Pi 5 strips the wake phrase before processing.
+5. Transcription (after wake phrase stripped) is checked for content:
+   - **Empty / only wake phrase** → discard, return to idle or restart window timer. No response.
+   - **"Take a photo" / "Fai una foto"** → vision flow (see below).
    - **"Save this" / "Salva questo"** → save flow (see below).
    - **General query** → append user turn to history, send full history to inference, generate response.
-7. Pi 5 sends full conversation history (all previous turns + new user turn) to the laptop as a multi-turn messages array.
-8. Piper TTS synthesises the response (< 200 ms to first chunk). Response is appended to history as the assistant turn.
-9. Pi 5 sends `{ "type": "status", "state": "speaking" }`.
-10. Pi 5 streams PCM audio chunks. Client unmutes `SD_MODE`, plays audio. OLED shows subtitle text.
-11. Pi 5 sends `audio_end`. Client mutes amplifier.
-12. Pi 5 sends `save_window_open`. OLED remains on showing the last response.
-13. Pi 5 enters follow-up/save window: openWakeWord suppressed, Whisper listens directly.
-    - **Speech detected** → timer paused until speech ends, then Whisper transcribes → go to step 6.
-    - **Silence × 8 s** → Pi 5 sends `save_window_closed` → OLED off → return to idle. History retained.
+6. Pi 5 sends full conversation history (all previous turns + new user turn) to the laptop as a multi-turn messages array.
+7. Piper TTS synthesises the response (< 200 ms to first chunk). Response is appended to history as the assistant turn.
+8. Pi 5 sends `{ "type": "status", "state": "speaking" }`.
+9. Pi 5 streams PCM audio chunks. Client unmutes `SD_MODE`, plays audio. TFT display shows subtitle text.
+10. Pi 5 sends `audio_end`. Client mutes amplifier.
+11. Pi 5 sends `save_window_open`. Display remains on showing the last response. 8-second window begins.
+12. Pi 5 re-enables openWakeWord. Any detected wake word restarts the pipeline (step 3).
+    - **Wake word + query detected** → reset timer, go to step 3.
+    - **Silence × 8 s** → Pi 5 clears conversation history, sends `save_window_closed` → display off → return to idle.
 
 ### Save flow
 
-Triggered when "Save this" / "Salva questo" is detected during the window (step 6 above):
+Triggered when **"Hey Vela, save this"** is detected during the follow-up window:
 
-1. Pi 5 writes the **last exchange only** (the most recent user turn and assistant response) as a JSON file to the authenticated user's directory on the SSD.
+1. Pi 5 writes the **last exchange only** (the most recent user turn and assistant response) as a new folder under the authenticated user's directory on the SSD. The folder contains `exchange.json` and, for vision saves, `image.jpg`.
 2. Pi 5 sends `save_confirmed`.
 3. Pi 5 plays "Salvato" clip.
-4. Window closes. OLED off. History retained in RAM.
-5. Return to idle.
+4. Pi 5 sends `save_window_open` again — the window reopens immediately. History is retained. The conversation may continue.
 
 ### Vision flow
 
-1. Pi 5 detects photo intent in transcription (step 6 of voice flow above).
+1. Pi 5 detects photo intent in transcription ("take a photo" / "fai una foto") after stripping the wake phrase.
 2. Pi 5 sends `{ "type": "control", "cmd": "photo_mode" }`.
-3. Client enters camera preview loop: OV2640 at ~5 fps, downsampled and dithered to 128×64. OLED shows live preview with 3–2–1 countdown.
+3. Client enters camera preview loop: OV2640 at ~5 fps, scaled and rendered to 240×320. TFT display shows live preview with 3–2–1 countdown overlay.
 4. At zero, client captures full-resolution JPEG and sends `{ "type": "image", "data": "..." }`.
-5. OLED turns off and waits.
+5. TFT display turns off and waits.
 6. Pi 5 sends Wake-on-LAN to laptop if sleeping.
 7. Pi 5 sends image + fixed description prompt to laptop via WebSocket. Vision exchanges are single-turn and do not carry conversation history.
-8. llama.cpp streams tokens. Pi 5 accumulates full response. Response is appended to history as the assistant turn.
+8. llama.cpp streams tokens. Pi 5 accumulates full response. Response is appended to history as the assistant turn; the captured JPEG is held in memory for the duration of the window in case the user saves it.
 9. Piper TTS synthesises response.
-10. Pi 5 streams audio → OLED shows subtitle text → client plays audio.
+10. Pi 5 streams audio → TFT display shows subtitle text → client plays audio.
 11. `audio_end` received. Amplifier muted.
-12. Follow-up/save window opens (same as steps 12–13 in the voice flow above).
+12. Follow-up/save window opens (same as steps 11–12 in the voice flow above). If "Hey Vela, save this" is spoken, both the text exchange and the JPEG are written to the save folder.
 
 ### Save retrieval flow
 
@@ -334,10 +349,11 @@ Any device on the local network can retrieve saves via the HTTP API:
 ```
 browser or curl → GET http://<pi5-ip>:8765/saves
                   Authorization: Basic <base64(username:sha256hash)>
-                ← JSON list of saved exchanges
-```
+                ← JSON list of saved exchanges (image_url included for vision saves)
 
-This makes the Pi 5's SSD act as a personal NAS for each user's saved VELA interactions.
+                  GET http://<pi5-ip>:8765/saves/2026-03-22T16-45-11/image
+                ← raw JPEG
+```
 
 ---
 
@@ -362,19 +378,25 @@ The openWakeWord model for "Hey Vela" can be trained for free using the tools in
 
 ## Pinout Reference
 
+The INMP441 and MAX98357A share the I2S bus (full-duplex). The ILI9341 uses hardware SPI. The INMP441's L/R pin must be tied to GND to assign the microphone to the left channel.
+
 | Pin | Connected to | Function |
 |---|---|---|
-| D7 | MAX98357A BCLK | I2S bit clock |
-| D8 | MAX98357A LRC | I2S word select |
+| D0 | ILI9341 BL | TFT backlight enable (or tie to 3.3 V) |
+| D1 | ILI9341 RST | TFT reset |
+| D2 | ILI9341 DC | TFT data/command select |
+| D3 | ILI9341 CS | TFT SPI chip select |
+| D4 | ILI9341 MOSI | SPI data out |
+| D5 | ILI9341 SCK | SPI clock |
+| D6 | MAX98357A SD_MODE | Amplifier mute (state-machine controlled) |
+| D7 | MAX98357A BCLK / INMP441 SCK | I2S shared bit clock |
+| D8 | MAX98357A LRC / INMP441 WS | I2S shared word select |
+| D9 | INMP441 SD | I2S microphone data in |
 | D10 | MAX98357A DIN | I2S audio data out |
-| D3 | MAX98357A SD_MODE | Amplifier mute (state-machine controlled) |
-| D4 | SSD1306 SDA | I2C data |
-| D5 | SSD1306 SCL | I2C clock |
-| 3V3 | VIN (amp), VCC (OLED) | Power |
-| GND | All module grounds | Ground |
-| D0, D1, D2, D6, D9 | — | Reserved / unused |
+| 3V3 | VIN (amp), VDD (INMP441), VCC (ILI9341) | Power |
+| GND | All module grounds, INMP441 L/R | Ground |
 
-The onboard PDM microphone uses internal GPIO 41/42 and does not occupy any header pins. There are no user-facing buttons.
+ILI9341 MISO is not connected (display is write-only). The OV2640 camera uses the ESP32-S3's internal camera interface and does not occupy any header pins.
 
 ---
 
@@ -388,20 +410,20 @@ All user-facing errors are communicated through audio, keeping the interaction m
 | WebSocket drop (ESP32 ↔ Pi 5) | Automatic silent reconnection and re-authentication in the background |
 | WiFi connection failure on boot | TTS speaks error message; device retries or re-enters AP setup mode |
 | Wake-on-LAN timeout (laptop unreachable) | Pi 5 plays a TTS error clip |
-| STT returns empty or invalid transcription | Pi 5 plays "Non ho capito" clip; save window does not open |
+| STT returns empty or only wake phrase | Pi 5 discards the utterance and returns to idle or restarts the window timer silently |
 | Wake word false positive (ambient noise) | Whisper VAD rejects the audio; Pi 5 returns to idle silently |
 | Save write failure (disk full, permissions) | Pi 5 plays "Non è stato possibile salvare" clip |
 | History exceeds token budget | Oldest turns are silently dropped; most recent 8 turns are retained |
 
 ---
 
-## OLED Display
+## TFT Display
 
-The SSD1306 display has three operating states:
+The ILI9341 240×320 SPI TFT has three operating states:
 
 - **Off** — default when idle, listening, or during the inference wait. The display is fully powered off to save energy and avoid distraction.
-- **Subtitle mode** — active during TTS playback and throughout the post-response follow-up/save window. Shows the response text as a scrolling display synchronised with audio, and remains on until the window closes.
-- **Camera viewfinder** — active during the photo countdown. Shows a live grayscale preview from the OV2640 at ~5 fps (128×64, dithered), with a 3–2–1 countdown overlay rendered directly into the frame buffer.
+- **Subtitle mode** — active during TTS playback and throughout the post-response follow-up window. Shows the response text as a scrolling display synchronised with audio, and remains on until the window closes or times out.
+- **Camera viewfinder** — active during the photo countdown. Shows a live colour preview from the OV2640 at ~5 fps (scaled to 240×320), with a 3–2–1 countdown overlay rendered directly into the frame buffer.
 
 The display never shows system status, IP addresses, or connection indicators during normal operation. All such feedback is delivered by voice.
 
@@ -409,23 +431,51 @@ The display never shows system status, IP addresses, or connection indicators du
 
 ## Storage and Retrieval
 
-The Pi 5's SSD stores each user's saved exchanges as individual JSON files, organised in a per-user directory tree:
+Each saved exchange is stored as a **dedicated folder** on the Pi 5's SSD, containing the text metadata and (for vision saves) the captured JPEG. This avoids embedding binary image data in JSON and keeps both files independently accessible.
 
 ```
 /vela-data/
   users/
     alice/
       saves/
-        2026-03-22T14-30-00.json
-        2026-03-22T16-45-11.json
+        2026-03-22T14-30-00/
+          exchange.json          ← voice save
+        2026-03-22T16-45-11/
+          exchange.json          ← vision save
+          image.jpg              ← captured JPEG (vision saves only)
     bob/
       saves/
-        2026-03-23T09-12-44.json
+        2026-03-23T09-12-44/
+          exchange.json
 ```
 
-Each file contains the question, the response, and a timestamp. Only the **last exchange** of a conversation is saved per "Save this" command — the full conversation history is not written to disk. Saves are triggered exclusively by the user saying "Save this" within the post-response window; they cannot be created any other way.
+**`exchange.json` for a voice save:**
+```json
+{
+  "id": "2026-03-22T14-30-00",
+  "timestamp": "2026-03-22T14:30:00",
+  "type": "voice",
+  "question": "What is the boiling point of water?",
+  "response": "Water boils at 100 degrees Celsius at sea level."
+}
+```
 
-The Pi 5 exposes saves over the local network via an authenticated HTTP API (see [Communication Protocol](#communication-protocol)). Any browser, `curl` command, or custom script can query a user's saves without any special software — the Pi 5 acts as a minimal personal NAS for each user's VELA history.
+**`exchange.json` for a vision save:**
+```json
+{
+  "id": "2026-03-22T16-45-11",
+  "timestamp": "2026-03-22T16:45:11",
+  "type": "vision",
+  "question": "Describe what you see in this image.",
+  "response": "The image shows a cluttered desk with a laptop, ..."
+}
+```
+
+The JPEG file is stored alongside `exchange.json` in the same folder. Deleting a save removes the entire folder.
+
+Only the **last exchange** of a conversation is saved per "Hey Vela, save this" command — the full conversation history is not written to disk. Saves are triggered exclusively by voice within the post-response window.
+
+The Pi 5 exposes saves over the local network via an authenticated HTTP API (see [Communication Protocol](#communication-protocol)). Any browser or `curl` command can query a user's saves and retrieve images without any special software.
 
 User account management is handled via a CLI tool on the Pi 5:
 
@@ -459,17 +509,17 @@ VELA supports multiple simultaneous users, each with isolated credentials and sa
 
 ## Android Client
 
-The Android application replicates the ESP32 behaviour exactly, including authentication and save functionality. There are no on-screen controls for triggering the assistant — the app is always-on.
+The Android application replicates the ESP32 behaviour exactly, including authentication and save functionality. There are no on-screen controls for triggering the assistant — the app is always-on and uses the same **"Hey Vela, \<query\>"** interaction model.
 
 - **Settings screen:** on first launch, the user enters the Pi 5 IP address, their VELA username, and their VELA password. These are stored in encrypted SharedPreferences and sent as a SHA-256 hash on every WebSocket connection.
 - **Authentication:** the app sends an `auth` message immediately on connection and handles failure with an on-screen error and a spoken error clip from the server.
 - **Audio streaming:** the microphone is opened on launch and PCM chunks (16 kHz, mono, 16-bit) are streamed continuously via OkHttp WebSocket, using the same `audio_chunk` protocol as the ESP32.
-- **Wake word:** detection runs on the Pi 5. The app streams audio and reacts to status messages.
+- **Wake word:** detection runs on the Pi 5. The app streams audio continuously and reacts to status messages.
 - **Photo flow:** on `photo_mode`, the app opens the rear camera (CameraX) full-screen with a 3–2–1 countdown overlay, captures a JPEG, and sends `{ "type": "image", "data": "..." }`.
 - **Audio playback:** TTS chunks are played via `AudioTrack`. The app unmutes on the first `audio_chunk` and stops on `audio_end`.
-- **Subtitle display:** during playback and the follow-up/save window, the response text is shown on screen, matching the OLED subtitle behaviour of the ESP32.
-- **Follow-up/save window:** on `save_window_open`, the subtitle display remains visible. If the user speaks, the timer resets and the pipeline runs again. On `save_confirmed`, a brief on-screen indicator confirms the save. On `save_window_closed`, the display clears.
-- **Save retrieval:** a separate screen in the app lists the authenticated user's saves by querying the Pi 5 HTTP API. Saves can be viewed and deleted from within the app.
+- **Subtitle display:** during playback and the follow-up window, the response text is shown on screen. On `save_window_open`, the subtitle remains visible. On `save_window_closed`, the display clears and history is cleared.
+- **Save flow:** on `save_confirmed`, a brief on-screen indicator confirms the save and the window reopens immediately.
+- **Save retrieval:** a separate screen in the app lists the authenticated user's saves by querying the Pi 5 HTTP API. Voice saves show question and response text; vision saves include the captured JPEG loaded from `/saves/{id}/image`. Saves can be viewed and deleted from within the app.
 - **Language selection:** handled by voice on first connection, stored locally in SharedPreferences.
 
 ---
