@@ -18,6 +18,10 @@ venv/
 dist/
 .env
 
+# ─── Users Data ──────────────────────────────────────────────────────────────
+server/data/
+data/
+
 # ─── PlatformIO (ESP32 firmware) ─────────────────────────────────────────────
 firmware/.pio/
 firmware/.pioenvs/
