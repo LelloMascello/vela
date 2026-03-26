@@ -81,16 +81,15 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 - Runs a llama.cpp WebSocket server with Vulkan backend.
 - Communicates with the Pi 5 via WebSocket, streaming tokens as they are generated. The Pi 5 collects the full response before passing it to TTS.
 - Receives the full conversation history on each request as a multi-turn messages array, enabling contextual follow-up responses.
-- BIOS UMA Frame Buffer set to 8 GB for the integrated Radeon 780M.
-- The `--mlock` flag pins the model in physical RAM, preventing paging to ZRAM under memory pressure.
+- BIOS UMA Frame Buffer set to 4 GB (or Auto) for the integrated Radeon 780M. The open-source `amdgpu` driver dynamically borrows up to ~10 GB of additional system RAM (GTT) as needed.
 
 **Recommended llama.cpp flags:**
 ```
---n-gpu-layers 32
---ctx-size 2048
---batch-size 512
---mlock
+--n-gpu-layers 99
+--ctx-size 8192
+--batch-size 256
 ```
+*(Note: Do not use the `--mlock` flag, as it prevents the dynamic GTT memory sharing required for larger models on integrated graphics).*
 
 ---
 
@@ -107,7 +106,7 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 | Save storage | Per-exchange folder (JSON + optional JPEG) on SSD | Pi 5 |
 | Wake-on-LAN | wakeonlan (Python) | Pi 5 |
 | VLM runtime | llama.cpp (Vulkan backend) | Laptop |
-| VLM model | qwen2-vl:7b Q8 | Laptop |
+| VLM model | Qwen3-VL-8B Q4_K_M | Laptop |
 | Android client | Kotlin, OkHttp WebSocket + HTTP, AudioTrack, CameraX | Android device |
 
 ---
@@ -363,12 +362,12 @@ browser or curl → GET http://<pi5-ip>:8765/saves
 |---|---|---|---|---|---|
 | Wake word | openWakeWord (custom "Hey Vela") | — | < 50 MB | real-time | Pi 5 |
 | STT | Faster-Whisper Small (VAD enabled) | — | ~1.5 GB | 400–700 ms | Pi 5 |
-| VLM | qwen2-vl:7b | Q8 | ~8 GB | 14–20 t/s | Laptop |
-| VLM (alt) | llama3.2-vision:11b | Q8 | ~11 GB | 8–12 t/s | Laptop |
+| VLM | Qwen3-VL-8B | Q4_K_M | ~4.8 GB | ~12 t/s | Laptop |
+| VLM (alt) | Llama3.2-Vision-11B | Q4_K_M | ~7.0 GB | 10–14 t/s | Laptop |
 | VLM (alt) | InternVL2-26B | Q4 | ~19 GB | 4–7 t/s | Laptop |
 | TTS | Piper it_IT-riccardo-x_low | — | < 200 MB | < 200 ms | Pi 5 |
 
-The recommended VLM is `qwen2-vl:7b Q8`, which provides the best speed-to-quality balance. STT and TTS are offloaded entirely to the Pi 5, freeing approximately 13 GB of laptop RAM for higher-quality quantisation.
+The recommended VLM is `Qwen3-VL-8B Q4_K_M`, which provides an incredible generational leap in reasoning and OCR, while perfectly balancing speed and hardware requirements. It fits comfortably within the 4 GB VRAM + GTT allocation, running at a highly responsive ~12 tokens/second on the integrated Radeon 780M. STT and TTS are offloaded entirely to the Pi 5, freeing laptop resources purely for visual and language inference.
 
 Vulkan is used as the llama.cpp backend instead of ROCm due to greater stability on the RDNA3 gfx1103 integrated GPU.
 
@@ -577,11 +576,11 @@ cmake --build build --config Release
 
 # Start the server
 ./build/bin/llama-server \
-  --model ./inference/models/qwen2-vl-7b-q8.gguf \
-  --n-gpu-layers 32 \
-  --ctx-size 2048 \
-  --batch-size 512 \
-  --mlock \
+  --model ./inference/models/Qwen3VL-8B-Instruct-Q4_K_M.gguf \
+  --mmproj ./inference/models/mmproj-Qwen3VL-8B-Instruct-F16.gguf \
+  --n-gpu-layers 99 \
+  --ctx-size 8192 \
+  --batch-size 256 \
   --host 0.0.0.0 \
   --port 8080
 ```
