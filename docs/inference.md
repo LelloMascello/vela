@@ -28,11 +28,11 @@ Il nodo di inferenza è un laptop **on-demand**: rimane in sleep quando non util
 **Hardware utilizzato:**
 - CPU: AMD Ryzen 7 8840HS
 - GPU integrata: AMD Radeon 780M (RDNA3, gfx1103)
-- UMA Frame Buffer: 8 GB (configurato nel BIOS)
+- Memoria GPU: 4 GB VRAM Dedicata (UMA) + ~10 GB Dinamica (GTT) gestita dal sistema tramite `amdgpu`
 - OS: Arch Linux
 
 **Perché Vulkan e non ROCm?**
-ROCm ha supporto instabile sulla GPU integrata RDNA3 (gfx1103). Vulkan tramite RADV offre piena compatibilità e stabilità su Arch Linux con driver Mesa.
+ROCm ha supporto instabile sulla GPU integrata RDNA3 (gfx1103). Vulkan tramite RADV offre piena compatibilità, gestione eccellente della memoria condivisa (GTT) e stabilità su Arch Linux con driver Mesa.
 
 ---
 
@@ -40,12 +40,12 @@ ROCm ha supporto instabile sulla GPU integrata RDNA3 (gfx1103). Vulkan tramite R
 
 | Componente | Minimo | Usato in VELA |
 |------------|--------|---------------|
-| GPU VRAM (UMA) | 8 GB | 8 GB (Radeon 780M) |
+| GPU VRAM (UMA) | 4 GB | 4 GB (Radeon 780M) + GTT |
 | RAM di sistema | 16 GB | 32 GB |
 | Storage libero | 20 GB | SSD NVMe |
 | Rete | Ethernet LAN | Ethernet |
 
-> **Nota BIOS:** impostare il UMA Frame Buffer a **8 GB** nelle impostazioni BIOS/UEFI. Il percorso varia per produttore, cercare "UMA Frame Buffer Size" o "iGPU Memory".
+> **Nota BIOS / Memoria:** impostare l'UMA Frame Buffer a **4 GB** o su **Auto** nelle impostazioni BIOS/UEFI. Non è necessario forzare 8GB: il driver open source `amdgpu` prenderà dinamicamente in prestito la RAM di sistema mancante (GTT) garantendo le stesse prestazioni senza sottrarre permanentemente memoria alla CPU.
 
 ---
 
@@ -61,7 +61,7 @@ vulkaninfo --summary
 ```
 
 Output atteso:
-```
+```text
 GPU0:
     deviceName         = AMD Radeon 780M Graphics (RADV PHOENIX)
     driverName         = radv
@@ -80,7 +80,7 @@ sudo pacman -S vulkan-radeon
 Clonare e compilare llama.cpp con il backend Vulkan:
 
 ```bash
-git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
+git clone [https://github.com/ggerganov/llama.cpp](https://github.com/ggerganov/llama.cpp) ~/llama.cpp
 cd ~/llama.cpp
 cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j$(nproc)
@@ -136,15 +136,19 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxx
 
 Ottenere un token gratuito su: https://huggingface.co/settings/tokens
 
-### Download modello raccomandato (Qwen2-VL-7B Q8)
+### Download modello raccomandato (Qwen3-VL-8B Q4_K_M)
 
+Scaricare i pesi principali (attenzione al case-sensitive dei file):
 ```bash
-hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
-  --include "Qwen2-VL-7B-Instruct-Q8_0.gguf" \
+hf download Qwen/Qwen3-VL-8B-Instruct-GGUF \
+  --include "*Q4_K_M.gguf" \
   --local-dir ~/vela/inference/models
+```
 
-hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
-  --include "mmproj-Qwen2-VL-7B-Instruct-f16.gguf" \
+Scaricare il vision encoder associato (fondamentale, prestare attenzione a `F16` maiuscolo):
+```bash
+hf download Qwen/Qwen3-VL-8B-Instruct-GGUF \
+  --include "*mmproj*F16*.gguf" \
   --local-dir ~/vela/inference/models
 ```
 
@@ -156,7 +160,7 @@ hf download bartowski/Qwen2-VL-7B-Instruct-GGUF \
 
 Dopo setup completo, `vela/inference/` deve apparire così:
 
-```
+```text
 inference/
 ├── llama-server              # Binary (escluso da .gitignore)
 ├── libggml.so.0              # Shared libraries (escluse da .gitignore)
@@ -167,8 +171,8 @@ inference/
 ├── libmtmd.so.0
 ├── start_server.sh           # Script di avvio (committato)
 └── models/                   # Pesi modelli (esclusi da .gitignore)
-    ├── Qwen2-VL-7B-Instruct-Q8_0.gguf
-    └── mmproj-Qwen2-VL-7B-Instruct-f16.gguf
+    ├── Qwen3VL-8B-Instruct-Q4_K_M.gguf
+    └── mmproj-Qwen3VL-8B-Instruct-F16.gguf
 ```
 
 Le seguenti voci sono escluse da `.gitignore`:
@@ -195,12 +199,11 @@ Contenuto di `start_server.sh`:
 cd "$(dirname "$0")"
 export LD_LIBRARY_PATH="$(dirname "$0"):$LD_LIBRARY_PATH"
 ./llama-server \
-  --model ./models/Qwen2-VL-7B-Instruct-Q8_0.gguf \
-  --mmproj ./models/mmproj-Qwen2-VL-7B-Instruct-f16.gguf \
-  --n-gpu-layers 32 \
-  --ctx-size 2048 \
-  --batch-size 512 \
-  --mlock \
+  --model ./models/Qwen3VL-8B-Instruct-Q4_K_M.gguf \
+  --mmproj ./models/mmproj-Qwen3VL-8B-Instruct-F16.gguf \
+  --n-gpu-layers 99 \
+  --ctx-size 8192 \
+  --batch-size 256 \
   --host 0.0.0.0 \
   --port 8080
 ```
@@ -209,10 +212,9 @@ export LD_LIBRARY_PATH="$(dirname "$0"):$LD_LIBRARY_PATH"
 
 | Flag | Valore | Motivo |
 |------|--------|--------|
-| `--n-gpu-layers` | 32 | Offload completo su Radeon 780M |
-| `--ctx-size` | 2048 | Sufficiente per prompt + immagine, non spreca VRAM |
-| `--batch-size` | 512 | Bilanciamento throughput/latenza |
-| `--mlock` | — | Mantiene il modello in RAM fisica, evita paging su ZRAM |
+| `--n-gpu-layers` | 99 | Forza l'offload di *tutti* i layer sulla Radeon 780M |
+| `--ctx-size` | 8192 | Essenziale per Qwen 3 VL, che "affetta" dinamicamente le immagini ad alta risoluzione in migliaia di token |
+| `--batch-size` | 256 | Ottimo bilanciamento throughput/latenza su iGPU |
 | `--host` | 0.0.0.0 | Accetta connessioni da Pi 5 sulla LAN |
 | `--port` | 8080 | Porta usata dal Pi 5 per le richieste WebSocket |
 
@@ -222,15 +224,13 @@ export LD_LIBRARY_PATH="$(dirname "$0"):$LD_LIBRARY_PATH"
 
 ### Controllo avvio
 
-All'avvio, il log deve mostrare:
-```
+All'avvio, il log deve mostrare l'uso di Vulkan e l'assegnazione della memoria libera (che include la GTT dinamica):
+```text
 ggml_vulkan: Found 1 Vulkan devices:
 ggml_vulkan: 0 = AMD Radeon 780M Graphics (RADV PHOENIX) ...
-llm_load_tensors: offloaded 32/32 layers to GPU
-llama server listening at http://0.0.0.0:8080
+llama_model_load_from_file_impl: using device Vulkan0 (AMD Radeon 780M Graphics) - 12737 MiB free
+llama server listening at [http://0.0.0.0:8080](http://0.0.0.0:8080)
 ```
-
-Se `offloaded` mostra meno di 32/32, la VRAM non è sufficiente per il modello scelto.
 
 ### Health check
 
@@ -276,7 +276,7 @@ Aprire `http://localhost:8080` — llama.cpp include una chat UI dove è possibi
 Quando llama.cpp rilascia una nuova versione:
 
 ```bash
-git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
+git clone [https://github.com/ggerganov/llama.cpp](https://github.com/ggerganov/llama.cpp) ~/llama.cpp
 cd ~/llama.cpp
 cmake -B build -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j$(nproc)
@@ -299,14 +299,14 @@ rm -rf ~/llama.cpp/
 
 ## 10. Scelta del Modello
 
-| Modello | Quantizzazione | VRAM richiesta | Velocità stimata | Fit in 8 GB |
-|---------|----------------|----------------|------------------|-------------|
-| **Qwen2-VL-7B** | **Q8** | **~8 GB** | **14–20 t/s** | **Esatto** |
-| Llama3.2-Vision-11B | Q4_K_M | ~7 GB | 10–14 t/s | Comodo |
-| Llama3.2-Vision-11B | Q8 | ~11 GB | 8–12 t/s | Spill ~3 GB |
-| InternVL2-26B | Q4 | ~19 GB | 4–7 t/s | Spill ~11 GB |
+| Modello | Quantizzazione | VRAM richiesta | Velocità stimata | Fit in 4GB + GTT |
+|---------|----------------|----------------|------------------|------------------|
+| **Qwen3-VL-8B** | **Q4_K_M** | **~4.8 GB** | **~12 t/s** | **Esatto / Comodo** |
+| Qwen2-VL-7B | Q8 | ~8 GB | 8 t/s | Comodo (Spill in GTT) |
+| Llama3.2-Vision-11B | Q4_K_M | ~7 GB | 10–14 t/s | Comodo (Spill in GTT) |
+| InternVL2-26B | Q4 | ~19 GB | 4–7 t/s | Satura sistema |
 
-> Il modello **Qwen2-VL-7B Q8** è quello raccomandato per VELA: occupa esattamente la VRAM disponibile, gira interamente su GPU senza spill in RAM di sistema, e offre il miglior rapporto qualità/velocità per un assistente vocale.
+> Il modello **Qwen3-VL-8B (Q4_K_M)** è la scelta definitiva per VELA: offre un salto generazionale nel ragionamento visivo e nell'OCR, consuma poca RAM di sistema, garantisce circa 12 token/secondo sulla 780M integrata e gestisce l'offload completo tramite Vulkan senza colli di bottiglia.
 
 Per cambiare modello, modificare i percorsi in `start_server.sh` e scaricare il nuovo `.gguf` + relativo `mmproj` in `inference/models/`.
 
@@ -380,6 +380,10 @@ patchelf --set-rpath '$ORIGIN' ~/vela/inference/llama-server
 ldd ~/vela/inference/llama-server  # verificare i percorsi
 ```
 
+### File non trovato / `failed to open GGUF file`
+
+Causato nel 99% dei casi da errori di battitura o case-sensitivity nei nomi file di Hugging Face. Assicurarsi che i nomi in `start_server.sh` coincidano **esattamente** (lettere maiuscole/minuscole e trattini) con l'output di `ls ~/vela/inference/models/`.
+
 ### `Could NOT find Vulkan` durante cmake
 
 Installare gli header Vulkan mancanti:
@@ -388,40 +392,12 @@ Installare gli header Vulkan mancanti:
 sudo pacman -S vulkan-headers
 ```
 
-### `offloaded 0/32 layers to GPU`
-
-Vulkan non sta usando la GPU. Verificare:
-
-```bash
-vulkaninfo --summary  # la GPU deve apparire
-```
-
-Se mancano i driver:
-```bash
-sudo pacman -S vulkan-radeon
-```
-
 ### Server lento (< 5 t/s)
 
-Il modello sta andando in spill nella RAM di sistema. Opzioni:
-- Ridurre `--ctx-size` a 1024
-- Passare a una quantizzazione inferiore (Q4_K_M invece di Q8)
-- Ridurre `--n-gpu-layers` e misurare la velocità
-
-### `mlock failed`
-
-Il sistema non permette di bloccare abbastanza memoria. Soluzione temporanea:
-
-```bash
-sudo sysctl -w vm.max_map_count=1000000
-ulimit -l unlimited
-```
-
-Soluzione permanente in `/etc/security/limits.conf`:
-```
-* soft memlock unlimited
-* hard memlock unlimited
-```
+Il modello è troppo grande e sta stressando il memory controller. Opzioni:
+- Verificare che `--n-gpu-layers` sia settato a 99 (per offload totale).
+- Passare a una quantizzazione inferiore (es. da Q8 a Q4_K_M).
+- Assicurarsi di non avere altri applicativi pesanti aperti che saturano la RAM di sistema condivisa (GTT).
 
 ### Download HuggingFace lento o bloccato
 
