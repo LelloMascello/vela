@@ -76,7 +76,7 @@ async def inference_worker(text_queue, tts_queue):
     e invia le frasi generate alla coda del TTS.
     """
     # --- CONFIGURAZIONE LAPTOP ---
-    LAPTOP_IP = "172.18.57.90"  # <-- SOSTITUISCI CON L'IP DEL TUO LAPTOP
+    LAPTOP_IP = "127.0.0.1"  # <-- SOSTITUISCI CON L'IP DEL TUO LAPTOP
     LAPTOP_MAC = None          # <-- Metti il MAC ("AA:BB...") se vuoi usare il WOL, altrimenti None
     
     # Storico base della conversazione (è isolato per ogni client connesso,

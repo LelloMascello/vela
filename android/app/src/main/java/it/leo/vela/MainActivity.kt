@@ -35,7 +35,7 @@ import java.io.FileOutputStream
 class MainActivity : ComponentActivity() {
 
     // --- INSERISCI QUI L'IP DEL TUO RASPBERRY PI 5 ---
-    private val WS_URL = "ws://172.18.57.133:8765"
+    private val WS_URL = "ws://192.168.178.136:8765"
     // -------------------------------------------------
 
     private var webSocket: WebSocket? = null
@@ -43,6 +43,10 @@ class MainActivity : ComponentActivity() {
     private var mediaRecorder: MediaRecorder? = null
     private var mediaPlayer: MediaPlayer? = null
     private lateinit var audioFile: File
+
+    // Aggiungi queste variabili sopra l'onCreate
+    private val audioQueue = mutableListOf<ByteArray>()
+    private var isPlaying = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,8 +72,13 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                Log.d("VelaWS", "Ricevuti ${bytes.size} bytes dal TTS!")
-                playAudioResponse(bytes.toByteArray())
+                Log.d("VelaWS", "Ricevuti ${bytes.size} bytes. Aggiungo alla coda.")
+                synchronized(audioQueue) {
+                    audioQueue.add(bytes.toByteArray())
+                    if (!isPlaying) {
+                        playNextInQueue()
+                    }
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -107,22 +116,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun playAudioResponse(audioData: ByteArray) {
-        try {
-            // Salviamo il WAV ricevuto da Piper in un file temporaneo
-            val tempFile = File(cacheDir, "response.wav")
-            val fos = FileOutputStream(tempFile)
-            fos.write(audioData)
-            fos.close()
-
-            // Lo riproduciamo
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
-                prepare()
-                start()
+    private fun playNextInQueue() {
+        val nextAudio: ByteArray?
+        synchronized(audioQueue) {
+            if (audioQueue.isEmpty()) {
+                isPlaying = false
+                return
             }
-        } catch (e: Exception) {
-            Log.e("VelaWS", "Errore riproduzione: ${e.message}")
+            isPlaying = true
+            nextAudio = audioQueue.removeAt(0)
+        }
+
+        nextAudio?.let { bytes ->
+            // Eseguiamo la riproduzione sul thread principale (UI Thread)
+            runOnUiThread {
+                try {
+                    val tempFile = File(cacheDir, "response_${System.currentTimeMillis()}.wav")
+                    FileOutputStream(tempFile).use { it.write(bytes) }
+
+                    mediaPlayer?.release() // Libera il precedente
+                    mediaPlayer = MediaPlayer().apply {
+                        setDataSource(tempFile.absolutePath)
+
+                        // IL TRUCCO È QUI: Quando finisce, chiama il prossimo
+                        setOnCompletionListener {
+                            it.release()
+                            tempFile.delete() // Pulizia
+                            playNextInQueue()
+                        }
+
+                        prepare()
+                        start()
+                    }
+                } catch (e: Exception) {
+                    Log.e("VelaWS", "Errore riproduzione: ${e.message}")
+                    isPlaying = false
+                    playNextInQueue() // Prova comunque il prossimo se questo fallisce
+                }
+            }
         }
     }
 

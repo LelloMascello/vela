@@ -4,7 +4,7 @@ from faster_whisper import WhisperModel
 
 # Carichiamo il modello in memoria (tiny è perfetto e velocissimo sul Pi 5)
 print("[STT] Caricamento modello Whisper in corso...")
-model = WhisperModel("base", device="cpu", compute_type="int8")
+model = WhisperModel("large-v3", device="cpu", compute_type="int8")
 print("[STT] Modello Whisper caricato!")
 
 async def stt_worker(audio_queue, text_queue):
