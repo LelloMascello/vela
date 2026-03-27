@@ -36,11 +36,11 @@ VELA is composed of three hardware nodes working in concert:
 | Node 2 | Raspberry Pi 5, 4 GB RAM | Middleware — always on, wake word detection, STT, TTS, storage |
 | Node 3 | Laptop (Ryzen 7 8840HS, Radeon 780M) | Inference server — on-demand vision language model |
 
-VELA is always listening. Every interaction follows the same structure: the user says **"Hey Vela, \<query\>"** — wake phrase and query in a single utterance. There are no buttons and no separate listening prompt. Saying **"Hey Vela, take a photo"** triggers the vision flow. After every response, an 8-second active-listening window allows the user to continue the conversation with the same **"Hey Vela, \<query\>"** format. If the window expires without a new request, conversation history is cleared.
+VELA is always listening. Every interaction follows the same structure: the user says **"Vela, \<query\>"** — wake phrase and query in a single utterance. There are no buttons and no separate listening prompt. Saying **"Vela, take a photo"** triggers the vision flow. After every response, an 8-second active-listening window allows the user to continue the conversation with the same **"Vela, \<query\>"** format. If the window expires without a new request, conversation history is cleared.
 
-VELA supports multi-turn conversations. Each **"Hey Vela, \<query\>"** in the follow-up window adds to the history and sends the full context to the inference layer. History is held in RAM on the Pi 5 and is cleared only when the 8-second window expires without a new utterance — not on mid-window wake words or saves.
+VELA supports multi-turn conversations. Each **"Vela, \<query\>"** in the follow-up window adds to the history and sends the full context to the inference layer. History is held in RAM on the Pi 5 and is cleared only when the 8-second window expires without a new utterance — not on mid-window wake words or saves.
 
-Within the follow-up window, saying **"Hey Vela, save this"** writes the last exchange to the Pi 5's SSD and keeps the window open, allowing the conversation to continue.
+Within the follow-up window, saying **"Vela, save this"** writes the last exchange to the Pi 5's SSD and keeps the window open, allowing the conversation to continue.
 
 The system supports multiple users. Each client authenticates with a username and password on connection; all saved exchanges are stored per-user and are only accessible to their owner. The TFT display stays off when idle and lights up during speech playback, showing the response text as subtitles.
 
@@ -74,23 +74,23 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 - A separate inference worker process holds a shared `asyncio.Queue`. Handler coroutines push jobs into the queue; the worker processes them sequentially and routes results back to the originating handler.
 - Sends a Wake-on-LAN magic packet to the laptop when a vision request arrives.
 - Plays an audio filler clip ("Un momento...") if processing delay exceeds 1.5 seconds.
+- Streams the assistant response to TTS sentence by sentence as soon as each sentence is complete, instead of waiting for the full model output.
 
 ### Node 3 — Inference Server (Laptop)
 
 - **On-demand** — sleeps when idle, woken by the Pi 5 via Wake-on-LAN.
-- Runs a llama.cpp WebSocket server with Vulkan backend.
-- Communicates with the Pi 5 via WebSocket, streaming tokens as they are generated. The Pi 5 collects the full response before passing it to TTS.
+- Runs a llama-server HTTP endpoint with Vulkan backend.
+- Communicates with the Pi 5 via the OpenAI-compatible HTTP API exposed by `llama-server` on `http://<IP_LAPTOP>:8080/v1/chat/completions` with `"stream": true`. The Pi 5 sends the `messages` array, receives the SSE stream in real time, and feeds completed sentences to TTS as soon as they finish, without manually managing multimodal chat templates or image-token placement.
 - Receives the full conversation history on each request as a multi-turn messages array, enabling contextual follow-up responses.
-- BIOS UMA Frame Buffer set to 8 GB for the integrated Radeon 780M.
-- The `--mlock` flag pins the model in physical RAM, preventing paging to ZRAM under memory pressure.
+- BIOS UMA Frame Buffer set to 4 GB (or Auto) for the integrated Radeon 780M. The open-source `amdgpu` driver dynamically borrows up to ~10 GB of additional system RAM (GTT) as needed.
 
 **Recommended llama.cpp flags:**
 ```
---n-gpu-layers 32
---ctx-size 2048
---batch-size 512
---mlock
+--n-gpu-layers 99
+--ctx-size 8192
+--batch-size 256
 ```
+*(Note: Do not use the `--mlock` flag, as it prevents the dynamic GTT memory sharing required for larger models on integrated graphics).*
 
 ---
 
@@ -107,7 +107,7 @@ On first boot, if no WiFi credentials or account details are stored in NVS flash
 | Save storage | Per-exchange folder (JSON + optional JPEG) on SSD | Pi 5 |
 | Wake-on-LAN | wakeonlan (Python) | Pi 5 |
 | VLM runtime | llama.cpp (Vulkan backend) | Laptop |
-| VLM model | qwen2-vl:7b Q8 | Laptop |
+| VLM model | Qwen3-VL-8B Q4_K_M | Laptop |
 | Android client | Kotlin, OkHttp WebSocket + HTTP, AudioTrack, CameraX | Android device |
 
 ---
@@ -186,7 +186,7 @@ Instructs the client to enter camera preview mode and begin the 3–2–1 countd
 ```json
 { "type": "control", "cmd": "save_window_open" }
 ```
-Sent after `audio_end` to notify the client that the post-response 8-second window is now active. The client keeps the display on (still showing the last response) and awaits a new "Hey Vela, \<query\>" utterance.
+Sent after `audio_end` to notify the client that the post-response 8-second window is now active. The client keeps the display on (still showing the last response) and awaits a new "Vela, \<query\>" utterance.
 
 ```json
 { "type": "control", "cmd": "save_window_closed" }
@@ -251,7 +251,13 @@ Each vision save includes an additional `image_url` field pointing to the `/save
 
 ### Pi 5 → Laptop
 
-The Pi 5 communicates with the llama.cpp server via WebSocket. For text queries it sends the full conversation history as a multi-turn messages array plus the new user turn; for vision queries it sends the image and a fixed description prompt. The laptop streams tokens back and the Pi 5 accumulates the full response before dispatching to Piper TTS.
+The Pi 5 communicates with `llama-server` through the OpenAI-compatible HTTP endpoint on the laptop: `http://<IP_LAPTOP>:8080/v1/chat/completions`.
+
+For text queries, the Pi 5 sends the full conversation history as a multi-turn `messages` array plus the new user turn, and enables `"stream": true`.
+
+For vision queries, the Pi 5 sends the image inside `messages` using the OpenAI-compatible multimodal format. `llama-server` applies the correct Qwen template automatically, so the Pi 5 does not need to manually place image tokens or maintain model-specific chat templates.
+
+The response arrives as SSE chunks in real time. The Pi 5 reconstructs the output incrementally and forwards each completed sentence to Piper TTS immediately, instead of waiting for the entire response to finish.
 
 ---
 
@@ -281,19 +287,19 @@ POWER ON
 
 ### Conversation lifecycle
 
-Every interaction — whether the first turn or a follow-up — uses the same **"Hey Vela, \<query\>"** structure. The wake phrase and the query are always in the same utterance. There is no separate "Ti ascolto" prompt; the query is captured inline.
+Every interaction — whether the first turn or a follow-up — uses the same **"Vela, \<query\>"** structure. The wake phrase and the query are always in the same utterance. There is no separate "Ti ascolto" prompt; the query is captured inline.
 
 History is accumulated across turns for the lifetime of a conversation. It is cleared only when the 8-second follow-up window expires without a new utterance. Saves do not close the window or clear history.
 
 ```
 [IDLE]
-  Hey Vela, <query>              → process query, generate response, history starts
-  Hey Vela, take a photo         → vision flow
+  Vela, <query>              → process query, generate response, history starts
+  Vela, take a photo         → vision flow
 
 [POST-RESPONSE WINDOW — 8 s timer running]
-  Hey Vela, <query>              → reset timer, append to history, full pipeline, new window opens
-  Hey Vela, take a photo         → reset timer, vision flow, new window opens
-  Hey Vela, save this            → save last exchange to SSD, confirm, window reopens immediately
+  Vela, <query>              → reset timer, append to history, full pipeline, new window opens
+  Vela, take a photo         → reset timer, vision flow, new window opens
+  Vela, save this            → save last exchange to SSD, confirm, window reopens immediately
   silence × 8 s                  → clear history, display off → return to IDLE
 ```
 
@@ -301,15 +307,15 @@ History is accumulated across turns for the lifetime of a conversation. It is cl
 
 1. ESP32 streams PCM chunks to the Pi 5 continuously via the INMP441. Amplifier is muted via `SD_MODE`.
 2. Pi 5 openWakeWord detector processes each chunk in real time.
-3. Wake word **"Hey Vela"** detected → Pi 5 sends `{ "type": "status", "state": "wake_word_detected" }`. If a follow-up window is open, its timer is cancelled.
-4. Pi 5 enables faster-whisper with VAD. Whisper records from the same audio stream, capturing the in-progress utterance until 1.5 s of silence, then transcribes (400–700 ms). The transcription includes the full "Hey Vela, \<query\>" string; the Pi 5 strips the wake phrase before processing.
+3. Wake word **"Vela"** detected → Pi 5 sends `{ "type": "status", "state": "wake_word_detected" }`. If a follow-up window is open, its timer is cancelled.
+4. Pi 5 enables faster-whisper with VAD. Whisper records from the same audio stream, capturing the in-progress utterance until 1.5 s of silence, then transcribes (400–700 ms). The transcription includes the full "Vela, \<query\>" string; the Pi 5 strips the wake phrase before processing.
 5. Transcription (after wake phrase stripped) is checked for content:
    - **Empty / only wake phrase** → discard, return to idle or restart window timer. No response.
    - **"Take a photo" / "Fai una foto"** → vision flow (see below).
    - **"Save this" / "Salva questo"** → save flow (see below).
    - **General query** → append user turn to history, send full history to inference, generate response.
-6. Pi 5 sends full conversation history (all previous turns + new user turn) to the laptop as a multi-turn messages array.
-7. Piper TTS synthesises the response (< 200 ms to first chunk). Response is appended to history as the assistant turn.
+6. Pi 5 sends full conversation history (all previous turns + new user turn) to the laptop as a multi-turn `messages` array via `POST /v1/chat/completions` with `"stream": true`.
+7. As soon as the first sentence is complete, the Pi 5 forwards it to Piper TTS and continues doing so sentence by sentence while the SSE stream keeps arriving. The response is appended to history as the assistant turn.
 8. Pi 5 sends `{ "type": "status", "state": "speaking" }`.
 9. Pi 5 streams PCM audio chunks. Client unmutes `SD_MODE`, plays audio. TFT display shows subtitle text.
 10. Pi 5 sends `audio_end`. Client mutes amplifier.
@@ -320,7 +326,7 @@ History is accumulated across turns for the lifetime of a conversation. It is cl
 
 ### Save flow
 
-Triggered when **"Hey Vela, save this"** is detected during the follow-up window:
+Triggered when **"Vela, save this"** is detected during the follow-up window:
 
 1. Pi 5 writes the **last exchange only** (the most recent user turn and assistant response) as a new folder under the authenticated user's directory on the SSD. The folder contains `exchange.json` and, for vision saves, `image.jpg`.
 2. Pi 5 sends `save_confirmed`.
@@ -335,12 +341,12 @@ Triggered when **"Hey Vela, save this"** is detected during the follow-up window
 4. At zero, client captures full-resolution JPEG and sends `{ "type": "image", "data": "..." }`.
 5. TFT display turns off and waits.
 6. Pi 5 sends Wake-on-LAN to laptop if sleeping.
-7. Pi 5 sends image + fixed description prompt to laptop via WebSocket. Vision exchanges are single-turn and do not carry conversation history.
+7. Pi 5 sends image + fixed description prompt to laptop via the OpenAI-compatible HTTP API. Vision exchanges are single-turn and do not carry conversation history.
 8. llama.cpp streams tokens. Pi 5 accumulates full response. Response is appended to history as the assistant turn; the captured JPEG is held in memory for the duration of the window in case the user saves it.
 9. Piper TTS synthesises response.
 10. Pi 5 streams audio → TFT display shows subtitle text → client plays audio.
 11. `audio_end` received. Amplifier muted.
-12. Follow-up/save window opens (same as steps 11–12 in the voice flow above). If "Hey Vela, save this" is spoken, both the text exchange and the JPEG are written to the save folder.
+12. Follow-up/save window opens (same as steps 11–12 in the voice flow above). If "Vela, save this" is spoken, both the text exchange and the JPEG are written to the save folder.
 
 ### Save retrieval flow
 
@@ -361,18 +367,18 @@ browser or curl → GET http://<pi5-ip>:8765/saves
 
 | Stage | Model | Quantisation | RAM usage | Speed | Node |
 |---|---|---|---|---|---|
-| Wake word | openWakeWord (custom "Hey Vela") | — | < 50 MB | real-time | Pi 5 |
+| Wake word | openWakeWord (custom "Vela") | — | < 50 MB | real-time | Pi 5 |
 | STT | Faster-Whisper Small (VAD enabled) | — | ~1.5 GB | 400–700 ms | Pi 5 |
-| VLM | qwen2-vl:7b | Q8 | ~8 GB | 14–20 t/s | Laptop |
-| VLM (alt) | llama3.2-vision:11b | Q8 | ~11 GB | 8–12 t/s | Laptop |
+| VLM | Qwen3-VL-8B | Q4_K_M | ~4.8 GB | ~12 t/s | Laptop |
+| VLM (alt) | Llama3.2-Vision-11B | Q4_K_M | ~7.0 GB | 10–14 t/s | Laptop |
 | VLM (alt) | InternVL2-26B | Q4 | ~19 GB | 4–7 t/s | Laptop |
 | TTS | Piper it_IT-riccardo-x_low | — | < 200 MB | < 200 ms | Pi 5 |
 
-The recommended VLM is `qwen2-vl:7b Q8`, which provides the best speed-to-quality balance. STT and TTS are offloaded entirely to the Pi 5, freeing approximately 13 GB of laptop RAM for higher-quality quantisation.
+The recommended VLM is `Qwen3-VL-8B Q4_K_M`, which provides an incredible generational leap in reasoning and OCR, while perfectly balancing speed and hardware requirements. It fits comfortably within the 4 GB VRAM + GTT allocation, running at a highly responsive ~12 tokens/second on the integrated Radeon 780M. STT and TTS are offloaded entirely to the Pi 5, freeing laptop resources purely for visual and language inference.
 
 Vulkan is used as the llama.cpp backend instead of ROCm due to greater stability on the RDNA3 gfx1103 integrated GPU.
 
-The openWakeWord model for "Hey Vela" can be trained for free using the tools in the openWakeWord repository; a pretrained generic model is used as the base.
+The openWakeWord model for "Vela" can be trained for free using the tools in the openWakeWord repository; a pretrained generic model is used as the base.
 
 ---
 
@@ -473,7 +479,7 @@ Each saved exchange is stored as a **dedicated folder** on the Pi 5's SSD, conta
 
 The JPEG file is stored alongside `exchange.json` in the same folder. Deleting a save removes the entire folder.
 
-Only the **last exchange** of a conversation is saved per "Hey Vela, save this" command — the full conversation history is not written to disk. Saves are triggered exclusively by voice within the post-response window.
+Only the **last exchange** of a conversation is saved per "Vela, save this" command — the full conversation history is not written to disk. Saves are triggered exclusively by voice within the post-response window.
 
 The Pi 5 exposes saves over the local network via an authenticated HTTP API (see [Communication Protocol](#communication-protocol)). Any browser or `curl` command can query a user's saves and retrieve images without any special software.
 
@@ -509,7 +515,7 @@ VELA supports multiple simultaneous users, each with isolated credentials and sa
 
 ## Android Client
 
-The Android application replicates the ESP32 behaviour exactly, including authentication and save functionality. There are no on-screen controls for triggering the assistant — the app is always-on and uses the same **"Hey Vela, \<query\>"** interaction model.
+The Android application replicates the ESP32 behaviour exactly, including authentication and save functionality. There are no on-screen controls for triggering the assistant — the app is always-on and uses the same **"Vela, \<query\>"** interaction model.
 
 - **Settings screen:** on first launch, the user enters the Pi 5 IP address, their VELA username, and their VELA password. These are stored in encrypted SharedPreferences and sent as a SHA-256 hash on every WebSocket connection.
 - **Authentication:** the app sends an `auth` message immediately on connection and handles failure with an on-screen error and a spoken error clip from the server.
@@ -564,7 +570,7 @@ python server/manage_users.py add alice
 # prompts for password, stores SHA-256 hash in SQLite
 ```
 
-Train or download the openWakeWord model for "Hey Vela" and place it in `server/wake_word/`. See the [openWakeWord documentation](https://github.com/dscripka/openWakeWord) for training instructions.
+Train or download the openWakeWord model for "Vela" and place it in `server/wake_word/`. See the [openWakeWord documentation](https://github.com/dscripka/openWakeWord) for training instructions.
 
 Ensure the SSD is mounted and the `/vela-data/` directory is writable by the server process.
 
@@ -577,14 +583,16 @@ cmake --build build --config Release
 
 # Start the server
 ./build/bin/llama-server \
-  --model ./inference/models/qwen2-vl-7b-q8.gguf \
-  --n-gpu-layers 32 \
-  --ctx-size 2048 \
-  --batch-size 512 \
-  --mlock \
+  --model ./inference/models/Qwen3VL-8B-Instruct-Q4_K_M.gguf \
+  --mmproj ./inference/models/mmproj-Qwen3VL-8B-Instruct-F16.gguf \
+  --n-gpu-layers 99 \
+  --ctx-size 8192 \
+  --batch-size 256 \
   --host 0.0.0.0 \
   --port 8080
 ```
+
+The Pi 5 will call `http://<IP_LAPTOP>:8080/v1/chat/completions` directly, so no separate WebSocket server is needed for laptop inference.
 
 ### Node 1 — ESP32
 
