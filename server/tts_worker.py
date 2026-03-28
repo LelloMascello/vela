@@ -1,55 +1,132 @@
+#"""
+#tts_worker.py  –  VELA Text-to-Speech worker (processo Piper persistente)
+#
+#Ottimizzazioni rispetto alla versione originale:
+#  - Un singolo processo Piper viene avviato UNA SOLA VOLTA e riutilizzato per
+#    tutta la durata della sessione.  L'invio di nuove frasi avviene semplicemente
+#    scrivendo su stdin (già aperto), eliminando l'overhead di avvio processo
+#    (~300-500 ms) per ogni frase generata.
+#  - Rilevamento della fine della sintesi tramite timeout su stdout (200 ms senza
+#    dati = Piper ha terminato la frase corrente).
+#  - Riavvio automatico di Piper in caso di crash.
+#"""
+
 import asyncio
-import os
+import base64
+import json
+from typing import AsyncIterator
 
-# --- CONFIGURAZIONE ---
-PIPER_EXE = "/home/leo/vela/server/venv/bin/piper" 
-PIPER_MODEL = "./it_IT-paola-medium.onnx" # Voce femminile
-OUTPUT_WAV = "output_tts.wav"
+# ---------------------------------------------------------------------------
+# Configurazione
+# ---------------------------------------------------------------------------
+PIPER_EXE   = "/home/leo/vela/server/venv/bin/piper"
+PIPER_MODEL = "/home/leo/vela/server/it_IT-paola-medium.onnx"
 
-async def tts_worker(tts_queue, websocket):
+CHUNK_SIZE       = 4096   # ~93 ms di audio a 22 050 Hz, 16-bit mono
+SENTENCE_TIMEOUT = 0.20   # secondi: pausa su stdout che indica "frase terminata"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+async def _avvia_piper() -> asyncio.subprocess.Process:
+    """Avvia un processo Piper che rimane aperto in background."""
+    process = await asyncio.create_subprocess_exec(
+        PIPER_EXE,
+        "--model", PIPER_MODEL,
+        "--output_raw",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    print("[TTS] Processo Piper avviato (persistente).")
+    return process
+
+
+async def _stream_frase(
+    process: asyncio.subprocess.Process,
+    text: str,
+) -> AsyncIterator[bytes]:
+    """
+    Invia una riga di testo a Piper e restituisce i chunk audio man mano
+    che vengono generati.  SENTENCE_TIMEOUT di silenzio su stdout segnala
+    la fine della sintesi per quella frase.
+    """
+    process.stdin.write((text + "\n").encode("utf-8"))
+    await process.stdin.drain()
+
     while True:
-        text = await tts_queue.get()
-        
-        # Pulizia testo per una lettura fluida
-        clean_text = text.replace("**", "").replace("*", "").replace("#", "").replace("- ", "").strip()
-        
-        if not clean_text or len(clean_text) < 2:
-            continue
-            
-        print(f"[TTS] Generazione audio per: '{clean_text}'")
-        
         try:
-            # Rimuoviamo il vecchio file se esiste
-            if os.path.exists(OUTPUT_WAV):
-                os.remove(OUTPUT_WAV)
-
-            command = [
-                PIPER_EXE,
-                "--model", PIPER_MODEL,
-                "--output_file", OUTPUT_WAV
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+            chunk = await asyncio.wait_for(
+                process.stdout.read(CHUNK_SIZE),
+                timeout=SENTENCE_TIMEOUT,
             )
+            if not chunk:   # processo terminato inaspettatamente
+                return
+            yield chunk
+        except asyncio.TimeoutError:
+            return          # Piper ha finito questa frase
 
-            stdout, stderr = await process.communicate(input=clean_text.encode('utf-8'))
 
-            if process.returncode != 0:
-                print(f"[TTS] ERRORE PIPER: {stderr.decode()}")
-                continue
+def _pulisci_testo(text: str) -> str:
+    return (
+        text.replace("**", "")
+            .replace("*", "")
+            .replace("#", "")
+            .replace("- ", "")
+            .strip()
+    )
 
-            if os.path.exists(OUTPUT_WAV) and os.path.getsize(OUTPUT_WAV) > 0:
-                with open(OUTPUT_WAV, "rb") as f:
-                    audio_data = f.read()
-                
-                await websocket.send(audio_data)
-                print(f"[TTS] Inviati {len(audio_data)} bytes a Paola.")
-            else:
-                print(f"[TTS] Errore: Il file audio è vuoto.")
 
-        except Exception as e:
-            print(f"[TTS] Errore critico: {e}")
+# ---------------------------------------------------------------------------
+# Worker asincrono principale
+# ---------------------------------------------------------------------------
+async def tts_worker(tts_queue: asyncio.Queue, websocket) -> None:
+    process = await _avvia_piper()
+
+    try:
+        while True:
+            try:
+                text = await tts_queue.get()
+                clean = _pulisci_testo(text)
+
+                if not clean or len(clean) < 2:
+                    continue
+
+                print(f"[TTS] Sintesi: '{clean}'")
+
+                # Riavvia Piper se il processo è crashato
+                if process.returncode is not None:
+                    print("[TTS] Processo Piper terminato — riavvio...")
+                    process = await _avvia_piper()
+
+                bytes_inviati = 0
+                async for audio_chunk in _stream_frase(process, clean):
+                    payload = {
+                        "type": "tts_chunk",
+                        "data": base64.b64encode(audio_chunk).decode("utf-8"),
+                    }
+                    await websocket.send(json.dumps(payload))
+                    bytes_inviati += len(audio_chunk)
+
+                print(f"[TTS] ✔ Frase inviata — {bytes_inviati} byte PCM.")
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[TTS] Errore: {e}")
+                # Se il processo è morto, riavvialo prima del prossimo turno
+                if process.returncode is not None:
+                    process = await _avvia_piper()
+
+    except asyncio.CancelledError:
+        print("[TTS] Worker cancellato.")
+    finally:
+        # Chiusura pulita del processo Piper
+        if process.returncode is None:
+            process.stdin.close()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                process.kill()
+            print("[TTS] Processo Piper chiuso.")
