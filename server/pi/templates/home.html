@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/style.css">
+    <title>Home - Le Mie Chat AI</title>
+</head>
+<body>
+    <div class="home-wrapper">
+        <button onclick="logout()" style="float: right; padding: 10px; cursor:pointer;">Logout</button>
+        <h2>Benvenuto, <span id="user-display"></span></h2>
+        
+        <div class="search-container">
+            <input type="text" id="search-input" placeholder="Cerca nelle tue conversazioni..." onkeyup="filterChats()">
+        </div>
+
+        <div id="exchanges-list">
+            </div>
+    </div>
+    <script src="/static/home.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!DOCTYPE html> 
+<html lang="en"> 
+<head> 
+    <meta charset="UTF-8"> 
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <link rel="stylesheet" href="/static/style.css">
+    <title>Registrazione</title> 
+</head> 
+<body> 
+    <form id="container"> 
+        <p class="text">Username</p> 
+        <input type="text" id="username" required> 
+        <p class="text">Email</p> 
+        <input type="email" id="email" required> 
+        <p class="text">Password</p> 
+        <input type="password" id="password" required> 
+        <p class="text">Conferma Password</p> 
+        <input type="password" id="conferma_password" required> 
+        <button type="button" id="registrati" onclick="signup()">REGISTRATI</button> 
+        <a href="/" id="crea">Hai già un account? Accedi qui</a> 
+    </form> 
+    <script src="/static/signup.js"></script>
+</body> 
+</html>
