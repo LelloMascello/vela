@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field
 from passlib.context import CryptContext
 from typing import List, Optional
 from datetime import datetime
+from bson import ObjectId  # Aggiunto per gestire gli ID di MongoDB
 import os
 
 # --- 1. SQLITE CONFIGURATION (AUTH) ---
@@ -104,11 +105,26 @@ async def save_chat_session(chat_data: ChatSessionSave):
         return {"message": "Saved", "chat_id": str(result.inserted_id)}
     raise HTTPException(status_code=500, detail="Failed to save")
 
+# GET Route con paginazione (skip, limit) e ordinamento decrescente
 @app.get("/api/chats/{user_id}")
-async def get_user_chats(user_id: int):
+async def get_user_chats(user_id: int, skip: int = 0, limit: int = 10):
     chats = []
-    cursor = chat_collection.find({"user_id": user_id})
+    # Ordina per _id decrescente (-1) che equivale cronologicamente al più recente
+    cursor = chat_collection.find({"user_id": user_id}).sort("_id", -1).skip(skip).limit(limit)
     async for document in cursor:
         document["_id"] = str(document["_id"])
         chats.append(document)
     return {"chats": chats}
+
+# DELETE Route per eliminare una chat specifica tramite il suo ObjectId
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: str):
+    try:
+        obj_id = ObjectId(chat_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="ID chat non valido")
+        
+    result = await chat_collection.delete_one({"_id": obj_id})
+    if result.deleted_count == 1:
+        return {"message": "Chat eliminata con successo"}
+    raise HTTPException(status_code=404, detail="Chat non trovata")
