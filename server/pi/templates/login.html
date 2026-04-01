@@ -4,25 +4,19 @@
         <meta charset="UTF-8"> 
         <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
         <link rel="stylesheet" href="/static/style.css?v=2">
-        <script src="/static/signup.js"></script>
-        <title>Registrazione</title> 
+        <script src="/static/login.js"></script>
+        <title>Login</title> 
     </head> 
     <body> 
-        <form id="container"> 
+        <div id="container"> 
             <p class="text">Username</p> 
-            <input type="text" name="username" id="username" required> 
-            
-            <p class="text">Email</p> 
-            <input type="email" name="email" id="email" required> 
+            <input type="text" name="username" id="username"> 
             
             <p class="text">Password</p> 
-            <input type="password" name="password" id="password" required> 
+            <input type="password" name="password" id="password"> 
             
-            <p class="text">Conferma Password</p> 
-            <input type="password" name="conferma_password" id="conferma_password" required> 
-            
-            <button type="button" id="registrati" onclick="signup()">REGISTRATI</button> 
-            <a href="/" id="crea">Hai già un account? Accedi qui</a> 
-        </form> 
-    </body> 
+            <button id="accedi" onclick="accedi()">ACCEDI</button> 
+            <a href="/signup" id="crea">Non hai un account? Clicca qui</a> 
+        </div> 
+    </body>
 </html>
