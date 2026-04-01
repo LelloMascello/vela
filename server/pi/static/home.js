@@ -1,27 +1,27 @@
-const userId = localStorage.getItem("user_id");
-
-// Protezione rotta: se non loggato, reindirizza al login
-if (!userId) {
-    window.location.href = "/";
-} else {
-    document.getElementById("user-display").innerText = localStorage.getItem("username");
-    // Avvia il caricamento iniziale
-    loadChats();
-}
-
-function logout() {
-    localStorage.clear();
-    window.location.href = "/";
-}
-
-// --- Variabili di stato per Infinite Scroll ---
+// --- 1. Variabili di stato per Infinite Scroll (DA METTERE IN CIMA) ---
 let skip = 0;
 const limit = 10;
 let isLoading = false;
 let hasMore = true;
 
+const userId = localStorage.getItem("user_id");
+
+// --- 2. Protezione rotta e Avvio ---
+if (!userId) {
+    window.location.href = "/";
+} else {
+    document.getElementById("user-display").innerText = localStorage.getItem("username");
+    // Ora possiamo chiamare loadChats perché isLoading è già stata inizializzata
+    loadChats();
+}
+
+// --- 3. Funzioni ---
+function logout() {
+    localStorage.clear();
+    window.location.href = "/";
+}
+
 async function loadChats() {
-    // Prevent overlapping calls or fetching when no more chats exist
     if (isLoading || !hasMore) return;
     
     isLoading = true;
@@ -30,18 +30,17 @@ async function loadChats() {
         console.log(`Fetching chats for user ${userId} with skip=${skip}, limit=${limit}`);
         const response = await fetch(`/api/chats/${userId}?skip=${skip}&limit=${limit}`);
         
-        // Check for backend errors (e.g., 500 or 422)
         if (!response.ok) {
-            console.error("Server responded with an error:", response.status, await response.text());
+            console.error("Errore dal server:", response.status, await response.text());
             return;
         }
 
         const data = await response.json();
-        console.log("Data received from server:", data);
+        console.log("Dati ricevuti:", data);
         
         const container = document.getElementById("exchanges-list");
 
-        // UI Feedback: If it's the very first load and the DB is completely empty
+        // Stato vuoto iniziale
         if (skip === 0 && (!data.chats || data.chats.length === 0)) {
             container.innerHTML = "<p style='text-align:center; margin-top:20px; opacity:0.7;'>Nessuna conversazione trovata. Inizia una nuova chat!</p>";
             hasMore = false;
@@ -75,7 +74,6 @@ async function loadChats() {
             cardHeader.appendChild(deleteBtn);
             card.appendChild(cardHeader);
 
-            // SAFETY CHECK: Protect against old/malformed MongoDB documents
             if (session.exchanges && Array.isArray(session.exchanges)) {
                 session.exchanges.forEach(exchange => {
                     const questionDiv = document.createElement("div");
@@ -90,7 +88,6 @@ async function loadChats() {
                     card.appendChild(responseDiv);
                 });
             } else {
-                // Fallback UI so the page doesn't crash
                 const errorMsg = document.createElement("div");
                 errorMsg.innerText = "[Errore: Formato chat obsoleto nel database]";
                 errorMsg.style.color = "red";
@@ -103,7 +100,7 @@ async function loadChats() {
         skip += limit;
         
     } catch (error) {
-        console.error("Network or parsing error:", error);
+        console.error("Errore di rete o di parsing:", error);
     } finally {
         isLoading = false;
     }
@@ -120,7 +117,6 @@ async function deleteChat(chatId) {
         if (response.ok) {
             const card = document.getElementById(`chat-${chatId}`);
             if (card) {
-                // Rimuovi dolcemente dal DOM
                 card.style.transition = "opacity 0.4s ease";
                 card.style.opacity = 0;
                 setTimeout(() => {
@@ -136,28 +132,24 @@ async function deleteChat(chatId) {
     }
 }
 
-// Filtro locale lato client
 function filterChats() {
     const query = document.getElementById("search-input").value.toLowerCase();
     const cards = document.getElementsByClassName("exchange-card");
 
     for (let i = 0; i < cards.length; i++) {
-        // Usa il textContent dell'intera card per ignorare i tag HTML nascosti
         const text = cards[i].textContent.toLowerCase();
         cards[i].style.display = text.includes(query) ? "flex" : "none";
         
-        // Mantieni la consistenza con la direction column (dipende dal tuo CSS)
         if (text.includes(query)) {
              cards[i].style.flexDirection = "column";
         }
     }
 }
 
-// Event Listener per l'Infinite Scroll
+// --- 4. Event Listeners ---
 window.addEventListener('scroll', () => {
     const { scrollTop, scrollHeight, clientHeight } = document.documentElement;
     
-    // Se l'utente arriva a 100px dalla fine della pagina, carica nuovi risultati
     if (scrollTop + clientHeight >= scrollHeight - 100) {
         loadChats();
     }
