@@ -21,35 +21,47 @@ let isLoading = false;
 let hasMore = true;
 
 async function loadChats() {
-    // Evita chiamate sovrapposte o chiamate inutili se non ci sono più chat
+    // Prevent overlapping calls or fetching when no more chats exist
     if (isLoading || !hasMore) return;
     
     isLoading = true;
     
     try {
+        console.log(`Fetching chats for user ${userId} with skip=${skip}, limit=${limit}`);
         const response = await fetch(`/api/chats/${userId}?skip=${skip}&limit=${limit}`);
-        const data = await response.json();
-        const container = document.getElementById("exchanges-list");
-
-        // Se l'API restituisce un array vuoto, abbiamo raggiunto la fine
-        if (data.chats.length === 0) {
-            hasMore = false;
-            isLoading = false;
+        
+        // Check for backend errors (e.g., 500 or 422)
+        if (!response.ok) {
+            console.error("Server responded with an error:", response.status, await response.text());
             return;
         }
 
-        // Se restituisce meno elementi del limite, non ce ne saranno altri da caricare al prossimo giro
+        const data = await response.json();
+        console.log("Data received from server:", data);
+        
+        const container = document.getElementById("exchanges-list");
+
+        // UI Feedback: If it's the very first load and the DB is completely empty
+        if (skip === 0 && (!data.chats || data.chats.length === 0)) {
+            container.innerHTML = "<p style='text-align:center; margin-top:20px; opacity:0.7;'>Nessuna conversazione trovata. Inizia una nuova chat!</p>";
+            hasMore = false;
+            return;
+        }
+
+        if (data.chats.length === 0) {
+            hasMore = false;
+            return;
+        }
+
         if (data.chats.length < limit) {
             hasMore = false;
         }
 
         data.chats.forEach(session => {
-            // Crea la card principale
             const card = document.createElement("div");
             card.className = "exchange-card";
-            card.id = `chat-${session._id}`; // Assegniamo un ID per facilitare la rimozione dal DOM
+            card.id = `chat-${session._id}`; 
 
-            // Header della card con pulsante elimina
             const cardHeader = document.createElement("div");
             cardHeader.style.display = "flex";
             cardHeader.style.justifyContent = "flex-end";
@@ -57,34 +69,41 @@ async function loadChats() {
             
             const deleteBtn = document.createElement("button");
             deleteBtn.innerText = "Elimina";
-            deleteBtn.className = "delete-btn"; // Aggiungi lo stile a questa classe nel tuo CSS
+            deleteBtn.className = "delete-btn"; 
             deleteBtn.onclick = () => deleteChat(session._id);
             
             cardHeader.appendChild(deleteBtn);
             card.appendChild(cardHeader);
 
-            // Popola i messaggi della sessione all'interno della stessa card
-            session.exchanges.forEach(exchange => {
-                const questionDiv = document.createElement("div");
-                questionDiv.className = "chat-bubble user-question";
-                questionDiv.innerText = exchange.question;
+            // SAFETY CHECK: Protect against old/malformed MongoDB documents
+            if (session.exchanges && Array.isArray(session.exchanges)) {
+                session.exchanges.forEach(exchange => {
+                    const questionDiv = document.createElement("div");
+                    questionDiv.className = "chat-bubble user-question";
+                    questionDiv.innerText = exchange.question || "N/A";
 
-                const responseDiv = document.createElement("div");
-                responseDiv.className = "chat-bubble ai-response";
-                responseDiv.innerText = exchange.response;
+                    const responseDiv = document.createElement("div");
+                    responseDiv.className = "chat-bubble ai-response";
+                    responseDiv.innerText = exchange.response || "N/A";
 
-                card.appendChild(questionDiv);
-                card.appendChild(responseDiv);
-            });
+                    card.appendChild(questionDiv);
+                    card.appendChild(responseDiv);
+                });
+            } else {
+                // Fallback UI so the page doesn't crash
+                const errorMsg = document.createElement("div");
+                errorMsg.innerText = "[Errore: Formato chat obsoleto nel database]";
+                errorMsg.style.color = "red";
+                card.appendChild(errorMsg);
+            }
 
             container.appendChild(card);
         });
 
-        // Incrementa lo skip per la prossima chiamata
         skip += limit;
         
     } catch (error) {
-        console.error("Errore nel recupero delle chat:", error);
+        console.error("Network or parsing error:", error);
     } finally {
         isLoading = false;
     }
