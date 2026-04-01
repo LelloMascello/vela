@@ -14,21 +14,43 @@ function logout() {
 }
 
 async function loadChats() {
-    const response = await fetch(`/api/chats/${userId}`);
-    const data = await response.json();
-    const container = document.getElementById("exchanges-list");
-    container.innerHTML = "";
+    try {
+        const response = await fetch('/api/chats'); // Adjust this URL if your endpoint is different
+        if (!response.ok) throw new Error("Errore nel caricamento delle chat");
+        
+        const chats = await response.json();
+        const container = document.getElementById('exchanges-list');
+        container.innerHTML = ''; // Pulisce il contenitore
 
-    data.chats.forEach(session => {
-        session.exchanges.forEach(exchange => {
-            container.innerHTML += `
-                <div class="exchange-card">
-                    <div class="chat-bubble user-question">${exchange.question}</div>
-                    <div class="chat-bubble ai-response">${exchange.response}</div>
-                </div>
-            `;
+        // Loop through each chat SESSION
+        chats.forEach(chat => {
+            // Create ONE card for the whole session
+            const card = document.createElement('div');
+            card.className = 'exchange-card';
+
+            // Loop through the messages (exchanges) inside this specific session
+            chat.exchanges.forEach(exchange => {
+                // Create user bubble
+                const questionDiv = document.createElement('div');
+                questionDiv.className = 'chat-bubble user-question';
+                questionDiv.innerText = exchange.question;
+
+                // Create AI bubble
+                const responseDiv = document.createElement('div');
+                responseDiv.className = 'chat-bubble ai-response';
+                responseDiv.innerText = exchange.response;
+
+                // Append both bubbles to the single card
+                card.appendChild(questionDiv);
+                card.appendChild(responseDiv);
+            });
+
+            // Append the finished card to the page
+            container.appendChild(card);
         });
-    });
+    } catch (error) {
+        console.error(error);
+    }
 }
 
 function filterChats() {

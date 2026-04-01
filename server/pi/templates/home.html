@@ -8,8 +8,11 @@
 </head>
 <body>
     <div class="home-wrapper">
-        <button onclick="logout()" style="float: right; padding: 10px; cursor:pointer;">Logout</button>
-        <h2>Benvenuto, <span id="user-display"></span></h2>
+        
+        <div class="header-container">
+            <h2>Benvenuto, <span id="user-display"></span></h2>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </div>
         
         <div class="search-container">
             <input type="text" id="search-input" placeholder="Cerca nelle tue conversazioni..." onkeyup="filterChats()">
@@ -20,4 +23,3 @@
     </div>
     <script src="/static/home.js"></script>
 </body>
-</html>
