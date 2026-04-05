@@ -1,273 +1,252 @@
-package it.leo.vela // <-- CAMBIA QUESTO CON IL TUO PACKAGE REALE
+package it.leo.vela
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Bundle
-import android.util.Base64
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import okhttp3.*
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
-import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
-    // --- VARIABILI DI RETE E AUDIO ---
-    private var webSocket: WebSocket? = null
-    private val client = OkHttpClient()
-    private val serverUrl = "ws://192.168.178.136:8765" // Sostituisci con l'IP del Pi 5
-
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
-    private var isStreaming = false
-    private var streamingJob: Job? = null
+    private var webSocket: WebSocket? = null
 
-    private val micSampleRate = 16000 // Input per Whisper STT
-    private val ttsSampleRate = 22050 // Output da Piper TTS
+    // UI State
+    private val isConnected = mutableStateOf(false)
+    private val transcriptions = mutableStateListOf<String>()
 
-    // --- STATO DELL'INTERFACCIA (COMPOSE) ---
-    private var isConnected by mutableStateOf(false)
-    private var statusText by mutableStateOf("Disconnesso")
+    // Coroutine control
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var recordingJob: Job? = null
+    private var playbackJob: Job? = null
+
+    // Channel to queue incoming audio chunks
+    private val audioPlaybackQueue = Channel<ByteArray>(Channel.UNLIMITED)
+
+    // Request permission launcher
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) connectToVela()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Gestore per richiedere il permesso del microfono a runtime
-        val requestPermissionLauncher = registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { isGranted ->
-            if (!isGranted) {
-                statusText = "Permesso microfono negato!"
-            }
-        }
-
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "VELA Client",
-                            style = MaterialTheme.typography.headlineMedium
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Stato: $statusText",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        Button(
-                            onClick = {
-                                // 1. Controllo Permessi
-                                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                                    requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                } else {
-                                    // 2. Toggle Connessione
-                                    if (!isConnected) {
-                                        connectWebSocket()
-                                    } else {
-                                        disconnect()
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(if (isConnected) "Disconnetti e Ferma" else "Connetti a VELA")
-                        }
-                    }
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    VelaApp()
                 }
             }
         }
     }
 
-    // ==========================================
-    // GESTIONE WEBSOCKET E RICEZIONE (TTS)
-    // ==========================================
-    private fun connectWebSocket() {
-        statusText = "Connessione in corso..."
-        val request = Request.Builder().url(serverUrl).build()
+    @Composable
+    fun VelaApp() {
+        val connected by isConnected
+
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Vela AI Client", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = {
+                if (connected) disconnect() else checkPermissionAndConnect()
+            }) {
+                Text(if (connected) "Disconnect" else "Connect")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text("Logs:", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Transcription Logs
+            Column {
+                transcriptions.takeLast(5).forEach { text ->
+                    Text(text)
+                }
+            }
+        }
+    }
+
+    private fun checkPermissionAndConnect() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            connectToVela()
+        } else {
+            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun connectToVela() {
+        val clientId = UUID.randomUUID().toString().take(8)
+        val userId = 1
+        // IMPORTANT: Replace with your Raspberry Pi's actual IP
+        val url = "ws://192.168.178.144:8000/ws/audio/$clientId?user_id=$userId"
+
+        val client = OkHttpClient.Builder()
+            .readTimeout(0, TimeUnit.MILLISECONDS) // Keep connection alive
+            .build()
+        val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                isConnected = true
-                statusText = "Connesso. Avvio audio..."
-
-                // Prepariamo l'altoparlante per le risposte
-                initAudioTrack()
-
-                // Inviamo le credenziali
-                val authJson = JSONObject().apply {
-                    put("type", "auth")
-                    put("username", "alice")
-                    put("password_hash", sha256("tua_password_segreta")) // Modifica la psw
-                }
-                webSocket.send(authJson.toString())
-
-                // Avviamo la registrazione del microfono
-                startAudioStreaming()
+                isConnected.value = true
+                startRecording(webSocket)
+                startPlayback()
+                log("Connected to Vela")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                // Parse the JSON config/transcriptions sent from the backend
                 try {
                     val json = JSONObject(text)
-                    when (json.optString("type")) {
-                        "tts_chunk" -> {
-                            val base64Audio = json.getString("data")
-                            val audioBytes = Base64.decode(base64Audio, Base64.DEFAULT)
-                            // Riproduzione immediata in streaming!
-                            audioTrack?.write(audioBytes, 0, audioBytes.size)
-                        }
-                        "auth_result" -> {
-                            val status = json.optString("status")
-                            Log.d("VELA", "Auth: $status")
-                            statusText = "Connesso (Auth: $status)"
-                        }
-                        else -> {
-                            Log.d("VELA", "Ricevuto: $text")
+                    when (json.getString("type")) {
+                        "wake_detected" -> log("System is listening...")
+                        "transcription" -> log("You: ${json.getString("text")}")
+                        "turn_end" -> log("Assistant finished speaking.")
+                        "audio_config" -> {
+                            // Backend tells us its audio config
+                            val rate = json.getInt("sample_rate")
+                            setupAudioTrack(rate)
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("VELA", "Errore parsing JSON: ${e.message}")
+                    e.printStackTrace()
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                // Receive TTS audio chunks and queue them for playback
+                scope.launch {
+                    audioPlaybackQueue.send(bytes.toByteArray())
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                isConnected = false
-                statusText = "Disconnesso"
-                stopAudioStreaming()
-                releaseAudioTrack()
+                cleanup()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e("VELA", "Errore WebSocket", t)
-                isConnected = false
-                statusText = "Errore di rete"
-                stopAudioStreaming()
-                releaseAudioTrack()
+                log("Error: ${t.message}")
+                cleanup()
             }
         })
     }
 
-    private fun disconnect() {
-        webSocket?.close(1000, "Chiusura manuale")
-        webSocket = null
-        isConnected = false
-        statusText = "Disconnesso"
-        stopAudioStreaming()
-        releaseAudioTrack()
-    }
-
-    // ==========================================
-    // GESTIONE MICROFONO (INVIO STT)
-    // ==========================================
-    private fun startAudioStreaming() {
-        if (isStreaming) return
-        isStreaming = true
-        statusText = "In ascolto..."
-
+    private fun startRecording(webSocket: WebSocket) {
+        val sampleRate = 16000
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val bufferSize = AudioRecord.getMinBufferSize(micSampleRate, channelConfig, audioFormat)
+        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
         try {
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
-                micSampleRate,
+                sampleRate,
                 channelConfig,
                 audioFormat,
                 bufferSize
             )
+
             audioRecord?.startRecording()
 
-            streamingJob = CoroutineScope(Dispatchers.IO).launch {
-                val buffer = ByteArray(bufferSize)
-                var sequence = 0
-
-                while (isStreaming && isActive) {
-                    val readBytes = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (readBytes > 0) {
-                        val base64Data = Base64.encodeToString(buffer, 0, readBytes, Base64.NO_WRAP)
-
-                        val payload = JSONObject().apply {
-                            put("type", "audio_chunk")
-                            put("data", base64Data)
-                            put("seq", sequence)
-                        }
-
-                        webSocket?.send(payload.toString())
-                        sequence++
+            recordingJob = scope.launch {
+                val buffer = ByteArray(1280 * 2) // Send small chunks roughly matching openWakeWord requirement
+                while (isActive) {
+                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (read > 0) {
+                        webSocket.send(buffer.copyOfRange(0, read).toByteString())
                     }
                 }
             }
         } catch (e: SecurityException) {
-            Log.e("VELA", "Permesso microfono non concesso", e)
-            statusText = "Errore microfono"
+            log("Audio permission denied.")
         }
     }
 
-    private fun stopAudioStreaming() {
-        isStreaming = false
-        streamingJob?.cancel()
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-    }
+    private fun setupAudioTrack(sampleRate: Int = 16000) {
+        audioTrack?.release()
+        val bufferSize = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
 
-    // ==========================================
-    // GESTIONE ALTOPARLANTE (RIPRODUZIONE TTS)
-    // ==========================================
-    private fun initAudioTrack() {
-        val channelConfig = AudioFormat.CHANNEL_OUT_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val bufferSize = AudioTrack.getMinBufferSize(ttsSampleRate, channelConfig, audioFormat)
-
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(audioFormat)
-                    .setSampleRate(ttsSampleRate)
-                    .setChannelMask(channelConfig)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
+        audioTrack = AudioTrack(
+            AudioManager.STREAM_MUSIC,
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            bufferSize,
+            AudioTrack.MODE_STREAM
+        )
         audioTrack?.play()
     }
 
-    private fun releaseAudioTrack() {
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
+    private fun startPlayback() {
+        // Fallback default track in case backend takes time to send audio_config
+        setupAudioTrack()
+
+        playbackJob = scope.launch {
+            for (chunk in audioPlaybackQueue) {
+                if (isActive) {
+                    audioTrack?.write(chunk, 0, chunk.size)
+                }
+            }
+        }
     }
 
-    // ==========================================
-    // UTILITY
-    // ==========================================
-    private fun sha256(input: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
+    private fun disconnect() {
+        webSocket?.close(1000, "User disconnected")
+        cleanup()
+    }
+
+    private fun cleanup() {
+        isConnected.value = false
+        recordingJob?.cancel()
+        playbackJob?.cancel()
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioRecord = null
+        audioTrack = null
+        log("Disconnected.")
+    }
+
+    private fun log(message: String) {
+        CoroutineScope(Dispatchers.Main).launch {
+            transcriptions.add(message)
+        }
     }
 
     override fun onDestroy() {

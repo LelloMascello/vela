@@ -1,150 +1,111 @@
 #"""
-#tts_worker.py  –  VELA Text-to-Speech worker (processo Piper persistente)
+#tts_worker.py — Streaming TTS using piper-tts
 #
-#Nessuna modifica architetturale rispetto alla versione precedente.
+#Reads tokens from token_in, buffers them into sentences (split on punctuation),
+#and synthesises each sentence with piper as soon as it's complete.
+#Raw 16-bit PCM audio bytes are placed on audio_out for immediate streaming.
 #
-#Il worker sintetizza qualsiasi stringa presente in tts_queue tramite un
-#singolo processo Piper mantenuto vivo per tutta la sessione.
-#
-#Le frasi hardcoded emesse dai flussi hardware di main.py
-#(es. "Salvato.", "Errore durante il salvataggio.") vengono gestite
-#esattamente come le frasi generate dal VLM: vengono messe in tts_queue
-#da main.py e il worker le processa senza logica speciale.
-#
-#Ottimizzazioni:
-#  - Un solo processo Piper avviato per sessione → elimina overhead ~300-500 ms
-#    di startup per ogni frase
-#  - Rilevamento fine sintesi tramite timeout su stdout (SENTENCE_TIMEOUT)
-#  - Riavvio automatico in caso di crash del processo
+#piper synthesises in a ThreadPoolExecutor so inference and TTS can overlap:
+#  VLM generates tokens  →  TTS synthesises sentence N
+#                        ←  client receives audio of sentence N
+#                        →  TTS synthesises sentence N+1  …
 #"""
 
 import asyncio
-import base64
-import json
-from collections.abc import AsyncIterator
+import io
+import logging
+import wave
+from concurrent.futures import ThreadPoolExecutor
 
-# ---------------------------------------------------------------------------
-# Configurazione
-# ---------------------------------------------------------------------------
-PIPER_EXE   = "/home/leo/vela/server/venv/bin/piper"
-PIPER_MODEL = "/home/leo/vela/server/it_IT-paola-medium.onnx"
+from piper.voice import PiperVoice
 
-CHUNK_SIZE       = 4096   # ~93 ms di audio a 22 050 Hz, 16-bit mono
-SENTENCE_TIMEOUT = 0.20   # secondi senza dati su stdout → Piper ha finito la frase
+from config import PIPER_MODEL_PATH, TTS_SAMPLE_RATE
 
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-async def _avvia_piper() -> asyncio.subprocess.Process:
-    """Avvia il processo Piper in modalità raw output e lo mantiene aperto."""
-    process = await asyncio.create_subprocess_exec(
-        PIPER_EXE,
-        "--model", PIPER_MODEL,
-        "--output_raw",
-        stdin  = asyncio.subprocess.PIPE,
-        stdout = asyncio.subprocess.PIPE,
-        stderr = asyncio.subprocess.PIPE,
-    )
-    print("[TTS] Processo Piper avviato (persistente).")
-    return process
+# Sentence boundaries — flush TTS when any of these appear
+_FLUSH_CHARS = frozenset({'.', '!', '?', '\n'})
+_MIN_FLUSH_LEN = 12        # avoid synthesising tiny fragments like "OK."
+_MAX_BUFFER_LEN = 300      # force flush if a very long sentence arrives
+
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
+
+# Shared piper model — loaded once
+_voice: PiperVoice | None = None
+_voice_lock = asyncio.Lock()
 
 
-async def _stream_frase(
-    process : asyncio.subprocess.Process,
-    text    : str,
-) -> AsyncIterator[bytes]:
-    """
-    Invia una frase a Piper (via stdin) e restituisce i chunk audio PCM
-    man mano che vengono generati su stdout.
-
-    SENTENCE_TIMEOUT secondi senza nuovi dati segnalano che Piper ha terminato
-    la sintesi della frase corrente.
-    """
-    process.stdin.write((text + "\n").encode("utf-8"))
-    await process.stdin.drain()
-
-    while True:
-        try:
-            chunk = await asyncio.wait_for(
-                process.stdout.read(CHUNK_SIZE),
-                timeout = SENTENCE_TIMEOUT,
+async def _get_voice() -> PiperVoice:
+    global _voice
+    async with _voice_lock:
+        if _voice is None:
+            logger.info("Loading piper model …")
+            loop = asyncio.get_event_loop()
+            _voice = await loop.run_in_executor(
+                None, PiperVoice.load, PIPER_MODEL_PATH
             )
-            if not chunk:   # EOF inaspettato: processo terminato
-                return
-            yield chunk
-        except asyncio.TimeoutError:
-            return          # fine sintesi per questa frase
+            logger.info("Piper ready (sample_rate=%d).", TTS_SAMPLE_RATE)
+    return _voice
 
 
-def _pulisci_testo(text: str) -> str:
-    """Rimuove simboli Markdown che Piper potrebbe pronunciare letteralmente."""
-    return (
-        text.replace("**", "")
-            .replace("*",  "")
-            .replace("#",  "")
-            .replace("- ", "")
-            .strip()
-    )
+def _synthesise_sync(voice: PiperVoice, text: str) -> bytes:
+    """Blocking piper synthesis → raw PCM bytes."""
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wf:
+        voice.synthesize(text, wf)
+    wav_buf.seek(0)
+    with wave.open(wav_buf, "rb") as wf:
+        return wf.readframes(wf.getnframes())
 
 
-# ---------------------------------------------------------------------------
-# Worker asincrono principale
-# ---------------------------------------------------------------------------
-async def tts_worker(tts_queue: asyncio.Queue, websocket) -> None:
+class TTSWorker:
     """
-    Legge frasi da tts_queue, le sintetizza con Piper e invia i chunk audio
-    PCM base64 al client WebSocket come {"type": "tts_chunk", "data": "..."}.
-
-    Gestisce trasparentemente:
-      - Frasi generate dal VLM (inference_worker)
-      - Frasi hardcoded dai flussi hardware (main.py: "Salvato.", errori, ecc.)
+    token_in  <- str (token) | None (generation done sentinel)
+    audio_out -> bytes (raw PCM) | None (done sentinel)
     """
-    process = await _avvia_piper()
 
-    try:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    async def run(self, token_in: asyncio.Queue, audio_out: asyncio.Queue) -> None:
+        voice = await _get_voice()
+        loop  = asyncio.get_event_loop()
+        buf   = ""
+        pending_tasks: list[asyncio.Task] = []
+
+        async def synth_and_enqueue(text: str) -> None:
+            pcm = await loop.run_in_executor(_executor, _synthesise_sync, voice, text)
+            if pcm:
+                await audio_out.put(pcm)
+
         while True:
-            try:
-                text  = await tts_queue.get()
-                clean = _pulisci_testo(text)
+            token = await token_in.get()
 
-                if not clean or len(clean) < 2:
-                    continue
+            if token is None:
+                # Flush remaining buffer
+                if buf.strip():
+                    await synth_and_enqueue(buf.strip())
+                # Wait for any in-flight synthesis tasks
+                if pending_tasks:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                await audio_out.put(None)
+                return
 
-                print(f"[TTS] Sintesi: '{clean}'")
+            buf += token
 
-                # Riavvia Piper se il processo è crashato tra un turno e l'altro
-                if process.returncode is not None:
-                    print("[TTS] Processo Piper terminato inaspettatamente — riavvio...")
-                    process = await _avvia_piper()
+            # Check sentence boundary
+            should_flush = (
+                (buf[-1] in _FLUSH_CHARS and len(buf) >= _MIN_FLUSH_LEN)
+                or len(buf) >= _MAX_BUFFER_LEN
+            )
 
-                bytes_inviati = 0
-                async for audio_chunk in _stream_frase(process, clean):
-                    payload = {
-                        "type" : "tts_chunk",
-                        "data" : base64.b64encode(audio_chunk).decode("utf-8"),
-                    }
-                    await websocket.send(json.dumps(payload))
-                    bytes_inviati += len(audio_chunk)
-
-                print(f"[TTS] ✔ Frase inviata — {bytes_inviati} byte PCM.")
-
-            except asyncio.CancelledError:
-                raise   # propaga per uscire dal loop esterno
-            except Exception as e:
-                print(f"[TTS] Errore: {e}")
-                # Se il crash ha ucciso Piper, riavvialo prima del prossimo turno
-                if process.returncode is not None:
-                    process = await _avvia_piper()
-
-    except asyncio.CancelledError:
-        print("[TTS] Worker cancellato.")
-    finally:
-        # Chiusura pulita del processo Piper
-        if process.returncode is None:
-            process.stdin.close()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                process.kill()
-            print("[TTS] Processo Piper chiuso correttamente.")
+            if should_flush:
+                text_to_synth = buf.strip()
+                buf = ""
+                if text_to_synth:
+                    # Create task — allows VLM to keep generating while TTS works
+                    task = asyncio.create_task(synth_and_enqueue(text_to_synth))
+                    pending_tasks.append(task)
+                    # Prune completed tasks from list
+                    pending_tasks = [t for t in pending_tasks if not t.done()]
+                    logger.debug("[%s] TTS flushing: %s", self.session_id, text_to_synth[:60])
