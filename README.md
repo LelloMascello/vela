@@ -1,6 +1,6 @@
 # VELA — Voice Edge Local Assistant
 
-A fully local, privacy-first multimodal AI assistant. VELA listens continuously, sees via camera, and responds via synthesised speech. No cloud services are involved; all processing occurs within the local network.
+A fully local, privacy-first AI audio assistant. VELA listens continuously and responds via synthesized speech. No cloud services are involved; all processing occurs within the local network.
 
 Developed as a *Tesina di Maturità* (Italian high school final examination project).
 
@@ -17,13 +17,15 @@ Developed as a *Tesina di Maturità* (Italian high school final examination proj
 
 ## Overview
 
-VELA is an intelligent local assistant composed of a client node and two server nodes working in concert. The system supports continuous audio upstreaming, live transcription, and intelligent text-to-speech responses with a privacy-first design.
+VELA is an intelligent local assistant composed of a client node and two server nodes working in concert. The system supports continuous audio upstreaming, direct audio-to-response generation, and intelligent text-to-speech with a privacy-first design. 
+
+By utilizing an audio-native Language Model, VELA skips traditional Speech-to-Text (STT) transcription, feeding raw audio queries directly to the AI for faster, more natural conversational interactions.
 
 ---
 
 ## Hardware Architecture
 
-- **Client Node:** ESP32-S3 Sense (equipped with microphone, speaker, and display) OR a dedicated Android Application.
+- **Client Node:** ESP32-S3 (equipped with microphone, speaker, and display) OR a dedicated Android Application.
 - **Server 1 (Orchestrator & Database):** Raspberry Pi 5 (4GB RAM, 512GB SSD).
 - **Server 2 (AI Processing Engine):** High-performance laptop (AMD Ryzen 7 8840HS, 24GB RAM).
 
@@ -39,13 +41,12 @@ VELA is an intelligent local assistant composed of a client node and two server 
 ### Server 1 (Raspberry Pi) Responsibilities
 - **Database Management:** Stores and retrieves chat histories.
 - **Web/Configuration Server:** Hosts the user interface for viewing saved chats and managing configurations.
-- **Wake Word Engine:** Continuously analyzes the incoming audio stream for the wake word ("Vela").
+- **Passive Listening Engine:** Continuously analyzes the incoming audio stream for the wake word ("Vela").
 - **Connection Routing:** Hands off the active client connection to Server 2 upon wake word detection.
 
 ### Server 2 (Laptop) Responsibilities
-- **Speech-to-Text (STT):** Live transcription of incoming audio chunks.
-- **Vision-Language Model (VLM):** Generates intelligent responses based on the transcribed text (and visual context, if utilizing the ESP32-S3 Sense camera).
-- **Text-to-Speech (TTS):** Converts the VLM's text tokens into streamable audio chunks.
+- **Audio-Native Language Model (e.g., Gemma):** Ingests raw audio chunks directly to generate intelligent text responses without requiring an intermediate transcription step.
+- **Text-to-Speech (TTS):** Converts the Model's generated text chunks (parsed sentence-by-sentence) into streamable audio.
 
 ---
 
@@ -57,19 +58,20 @@ The ESP32 initializes an Access Point using the WiFiManager library to allow the
 ### 2. Profile Synchronization
 Once connected to the network, the client connects to Server 1 (Raspberry Pi) to retrieve and load the user profile and system configurations.
 
-### 3. Wake Word Detection (Idle State)
-- The client begins continuously streaming audio to the Raspberry Pi.
-- The Pi processes this stream specifically to detect the wake word, "Vela".
-- When the wake word is detected, the Pi routes the active audio stream connection to Server 2 (Laptop).
-- An audio cue is immediately sent back to the client to notify the user that the system is actively listening.
+### 3. Passive Listening
+- The client streams audio continuously to the Raspberry Pi.
+- The Pi processes this stream in a loop to detect the wake word ("Vela").
+- Upon detection, the Pi triggers an immediate audio cue on the client (*"Come posso esserti utile?"*), stops the passive listening loop, and hands off the audio stream to Server 2 to start the **Active Listening** loop.
 
-### 4. Active Transcription & AI Generation
-Server 2 receives the audio stream in chunks and performs live transcription.
-- When the STT engine detects a natural pause or long silence in the user's speech, it sends the completed transcription to the VLM.
-- As the VLM generates text tokens, they are immediately piped into the TTS engine.
-- The generated audio chunks are streamed directly back to the client and played out of the speaker.
+### 4. Active Listening
+Server 2 actively compiles the user's incoming raw audio stream.
+- **Speech Detected:** Once the system detects that the user has spoken and finished their query, it stops the active listening loop and transitions to the **Response Generation** loop.
+- **Silence Timeout:** If the system enters active listening but the user does not speak for 8 consecutive seconds, the active listening loop is terminated, and the system reverts to the **Passive Listening** loop on the Raspberry Pi.
 
-### 5. Follow-up Window & Session Closure
-After the final audio chunk of the VLM's response is sent to the client, Server 2 enters a 5-second active listening phase. During this window, the laptop continues to transcribe incoming audio:
-- **If speech is detected:** The new text is appended to the ongoing chat history (maintaining conversational context) and sent back to the VLM. The generation and TTS playback cycle repeats, and the 5-second timer is reset.
-- **If 5 seconds pass in silence:** Server 2 closes the active connection to the client. Routing control defaults back to the Raspberry Pi (returning to the Wake Word Detection state). Server 2 then sends the full conversation transcript to the Pi to be saved in the database.
+### 5. Response Generation & Playback
+The compiled raw audio query is fed directly into the audio-native Language Model on Server 2.
+- As the LLM infers and generates a text response, the system parses the text in real-time, looking for sentence-ending punctuation (e.g., a period).
+- Once a full sentence is isolated, that specific text string is sent to the Text-to-Speech (TTS) engine.
+- The generated audio chunk is immediately streamed to the ESP32 and played back to the user.
+- The system then moves to the next sentence generated by the LLM and repeats the TTS process.
+- Once the final part of the response is generated, synthesized, and played, the generation loop stops, and the system automatically drops back into the **Active Listening** loop to catch any follow-up questions.
