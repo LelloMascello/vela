@@ -1,6 +1,6 @@
 # VELA — Voice Edge Local Assistant
 
-A fully local, privacy-first AI audio assistant. VELA listens continuously and responds via synthesized speech. No cloud services are involved; all processing occurs within the local network.
+A fully local, privacy-first voice AI assistant. VELA listens continuously, responds via synthesised speech, and keeps all processing within the local network.
 
 Developed as a *Tesina di Maturità* (Italian high school final examination project).
 
@@ -17,61 +17,130 @@ Developed as a *Tesina di Maturità* (Italian high school final examination proj
 
 ## Overview
 
-VELA is an intelligent local assistant composed of a client node and two server nodes working in concert. The system supports continuous audio upstreaming, direct audio-to-response generation, and intelligent text-to-speech with a privacy-first design. 
-
-By utilizing an audio-native Language Model, VELA skips traditional Speech-to-Text (STT) transcription, feeding raw audio queries directly to the AI for faster, more natural conversational interactions.
+VELA is composed of a client node and two server nodes. The Raspberry Pi orchestrates the session and owns the wake word engine; the laptop runs all AI inference. The key design choice is **native audio inference**: Gemma 4 E4B accepts raw audio directly, eliminating the traditional STT → LLM pipeline in favour of a single end-to-end model call.
 
 ---
 
 ## Hardware Architecture
 
-- **Client Node:** ESP32-S3 (equipped with microphone, speaker, and display) OR a dedicated Android Application.
-- **Server 1 (Orchestrator & Database):** Raspberry Pi 5 (4GB RAM, 512GB SSD).
-- **Server 2 (AI Processing Engine):** High-performance laptop (AMD Ryzen 7 8840HS, 24GB RAM).
+```
+┌─────────────────────┐       audio stream       ┌──────────────────────────┐
+│  ESP32-S3 / Android │ ───────────────────────> │      Raspberry Pi 5      │
+│      (client)       │ <─────────────────────── │   (orchestrator + DB)    │
+│                     │  audio cue / prof. sync  │                          │
+│  · mic              │                          │  · wake word engine      │
+│  · speaker          │                          │  · connection router     │
+│  · WiFi             │                          │  · chat database         │
+│  · WiFiManager      │                          │  · web / config server   │
+└─────────────────────┘                          │  · 4 GB RAM · 512 GB SSD │
+          ^                                      └───────────┬──────────────┘
+          │                                                  │ stream handoff
+          │                                                  v
+          │                                      ┌──────────────────────────┐
+          │        audio response (chunks)       │          Laptop          │
+          └───────────────────────────────────── │  (AI processing engine)  │
+                                                 │                          │
+                                                 │  · Gemma 4 E4B (VLM)     │
+                                                 │  · native audio input    │
+                                                 │  · TTS engine            │
+                                                 │  · session management    │
+                                                 │  · Ryzen 7 8840HS 24 GB  │
+                                                 └──────────────────────────┘
+```
 
 ---
 
 ## Software & Services
 
-### Client Responsibilities
-- Initial network configuration.
-- Continuous upstream of audio data.
-- Downstream playback of received audio responses.
+### Client responsibilities
 
-### Server 1 (Raspberry Pi) Responsibilities
-- **Database Management:** Stores and retrieves chat histories.
-- **Web/Configuration Server:** Hosts the user interface for viewing saved chats and managing configurations.
-- **Passive Listening Engine:** Continuously analyzes the incoming audio stream for the wake word ("Vela").
-- **Connection Routing:** Hands off the active client connection to Server 2 upon wake word detection.
+- Initial network configuration via WiFiManager access point
+- Continuous upstream of raw audio to Server 1
+- Downstream playback of received audio response chunks
 
-### Server 2 (Laptop) Responsibilities
-- **Audio-Native Language Model (e.g., Gemma):** Ingests raw audio chunks directly to generate intelligent text responses without requiring an intermediate transcription step.
-- **Text-to-Speech (TTS):** Converts the Model's generated text chunks (parsed sentence-by-sentence) into streamable audio.
+### Server 1 — Raspberry Pi responsibilities
+
+- **Wake word engine** — continuously analyses the audio stream and detects "Vela"
+- **Connection router** — hands the live stream to the laptop on detection; resumes control after session closure
+- **Database** — stores full conversation transcripts and user profiles
+- **Web / config server** — hosts the chat history viewer and system settings interface
+
+### Server 2 — Laptop responsibilities
+
+- **Gemma 4 E4B (VLM)** — accepts raw audio natively; no separate STT engine required
+- **TTS engine** — converts token output to audio chunks gated by sentence boundary, streamed in real time
+- **Session management** — active listening loop, unified silence counter, follow-up window, session closure
 
 ---
 
 ## Operational Flow
 
-### 1. Initial Setup & Configuration
-The ESP32 initializes an Access Point using the WiFiManager library to allow the user to input local network credentials and connect the device to the Wi-Fi.
+### States overview
 
-### 2. Profile Synchronization
-Once connected to the network, the client connects to Server 1 (Raspberry Pi) to retrieve and load the user profile and system configurations.
+```
+                     ┌──────────────────────┐
+                ┌───>│  Passive listening   │<──────────────────────────┐
+                │    │  Pi owns stream      │                           │
+                │    └──────────┬───────────┘                           │
+                │               │ "Vela" detected                       │
+                │               v                                       │
+                │    ┌──────────────────────┐                           │
+                │    │  Play audio cue      │                           │
+                │    │  "Come posso esserti │                           │
+                │    │   utile?"            │                           │
+                │    └──────────┬───────────┘                           │
+                │               │                                       │
+                │               v                                       │
+                │    ┌──────────────────────┐   silence > 8 s &         │
+                │    │  Active listening    │── never spoke ────────────┘
+                │    │  laptop owns stream  │
+                │    └──────────┬───────────┘
+                │               │ speech ended
+                │               v
+                │    ┌──────────────────────┐
+                │    │  Generate response   │
+                │    │  Gemma 4 E4B ──> TTS │<─────────────────┐
+                │    │  ──> stream chunks   │                  │
+                │    └──────────┬───────────┘                  │
+                │               │                              │
+                │               v                              │
+                │    ┌──────────────────────┐ speech detected  │
+                │    │  Follow-up window    │──────────────────┘
+                │    │  silence counter     │
+                │    │  resets to 0         │
+                │    └──────────┬───────────┘
+                │               │ silence > 8 s
+                │               v
+                │    ┌──────────────────────┐
+                └────│  Close session       │
+                     │  send transcript → Pi│
+                     └──────────────────────┘
+```
 
-### 3. Passive Listening
-- The client streams audio continuously to the Raspberry Pi.
-- The Pi processes this stream in a loop to detect the wake word ("Vela").
-- Upon detection, the Pi triggers an immediate audio cue on the client (*"Come posso esserti utile?"*), stops the passive listening loop, and hands off the audio stream to Server 2 to start the **Active Listening** loop.
+> **Silence counter:** one shared timer. If the user never spoke after the wake word, the session times out at 8 s. The same 8 s threshold applies during the follow-up window after response playback ends.
 
-### 4. Active Listening
-Server 2 actively compiles the user's incoming raw audio stream.
-- **Speech Detected:** Once the system detects that the user has spoken and finished their query, it stops the active listening loop and transitions to the **Response Generation** loop.
-- **Silence Timeout:** If the system enters active listening but the user does not speak for 8 consecutive seconds, the active listening loop is terminated, and the system reverts to the **Passive Listening** loop on the Raspberry Pi.
+---
 
-### 5. Response Generation & Playback
-The compiled raw audio query is fed directly into the audio-native Language Model on Server 2.
-- As the LLM infers and generates a text response, the system parses the text in real-time, looking for sentence-ending punctuation (e.g., a period).
-- Once a full sentence is isolated, that specific text string is sent to the Text-to-Speech (TTS) engine.
-- The generated audio chunk is immediately streamed to the ESP32 and played back to the user.
-- The system then moves to the next sentence generated by the LLM and repeats the TTS process.
-- Once the final part of the response is generated, synthesized, and played, the generation loop stops, and the system automatically drops back into the **Active Listening** loop to catch any follow-up questions.
+### 1. Setup & profile sync
+
+On first boot the ESP32 opens a WiFiManager access point. After the user enters network credentials, the client connects to the Raspberry Pi and downloads the user profile and system configuration.
+
+### 2. Passive listening
+
+The client streams audio continuously to the Pi. The Pi's wake word engine analyses the stream in real time. Nothing is forwarded to the laptop during this phase.
+
+### 3. Wake word detected
+
+When "Vela" is recognised, the Pi routes the live audio connection to the laptop and immediately sends an audio cue back to the client: *"Come posso esserti utile?"* The silence counter starts at zero and `neverTalked` is set to `true`.
+
+### 4. Active listening
+
+The laptop buffers incoming audio. If speech is detected and then ends, the system moves to response generation and sets `neverTalked = false`. The silence counter increments each second in parallel. If it exceeds 8 s while `neverTalked` is still `true` — the user never spoke after the wake word — the session times out and routing returns to the Pi.
+
+### 5. Response generation
+
+Gemma 4 E4B processes the buffered audio natively — no speech-to-text conversion occurs. As the model emits text tokens they are piped into the TTS engine, which releases an audio chunk each time it reaches a sentence boundary. Chunks stream to the client immediately for low-latency playback.
+
+### 6. Follow-up window & session closure
+
+Once the final audio chunk is sent the silence counter resets to zero. If the user speaks within 8 s, the new audio is appended to the session context and the generation cycle repeats. If 8 s of silence elapse, the laptop sends the full transcript to the Pi for storage and routing returns to passive listening.
