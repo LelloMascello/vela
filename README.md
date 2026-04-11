@@ -1,27 +1,33 @@
-# VELA — Voice Edge Local Assistant
+# 🌟 Vela — Assistente Vocale Distribuito / Distributed Voice Assistant
 
-A fully local, privacy-first voice AI assistant. VELA listens continuously, responds via synthesised speech, and keeps all processing within the local network.
-
-Developed as a *Tesina di Maturità* (Italian high school final examination project).
+> Progetto per l'Esame di Stato · *Maturità 2025*
+> 
+> A distributed, wake-word-triggered voice assistant running across three physical nodes: a client device (ESP32-S3 or Android), a Raspberry Pi 5 orchestrator, and a laptop AI engine.
 
 ---
 
-## Table of Contents
+## Indice / Table of Contents
 
 - [Overview](#overview)
-- [Hardware Architecture](#hardware-architecture)
-- [Software & Services](#software--services)
-- [Operational Flow](#operational-flow)
+- [Architecture](#architecture)
+- [Hardware Requirements](#hardware-requirements)
+- [Software Stack](#software-stack)
+- [Conversation Flow](#conversation-flow)
+- [Setup](#setup)
+- [Project Structure](#project-structure)
+- [Glossary](#glossary)
 
 ---
 
 ## Overview
 
-VELA is composed of a client node and two server nodes. The Raspberry Pi orchestrates the session and owns the wake word engine; the laptop runs all AI inference. The key design choice is **native audio inference**: Gemma 4 E4B accepts raw audio directly, eliminating the traditional STT → LLM pipeline in favour of a single end-to-end model call.
+**IT** — Vela è un assistente vocale general-purpose progettato per girare su hardware consumer distribuito. Il nome è anche la wake word: pronunciare *"Vela"* avvia una sessione conversazionale. Il sistema è composto da tre nodi che si coordinano in rete locale: il client (ESP32-S3 o Android) cattura e riproduce l'audio, il Raspberry Pi 5 gestisce l'orchestrazione e il database, e il laptop esegue il modello AI e la sintesi vocale.
+
+**EN** — Vela is a general-purpose voice assistant designed to run across consumer distributed hardware. The name is also the wake word: saying *"Vela"* starts a conversational session. The system is made of three networked nodes: the client (ESP32-S3 or Android) captures and plays back audio, the Raspberry Pi 5 handles orchestration and the database, and the laptop runs the AI model and TTS engine.
 
 ---
 
-## Hardware Architecture
+## Architecture
 
 ```
 ┌─────────────────────┐       audio stream       ┌──────────────────────────┐
@@ -48,99 +54,148 @@ VELA is composed of a client node and two server nodes. The Raspberry Pi orchest
                                                  └──────────────────────────┘
 ```
 
----
+### Node Responsibilities
 
-## Software & Services
-
-### Client responsibilities
-
-- Initial network configuration via WiFiManager access point
-- Continuous upstream of raw audio to Server 1
-- Downstream playback of received audio response chunks
-
-### Server 1 — Raspberry Pi responsibilities
-
-- **Wake word engine** — continuously analyses the audio stream and detects "Vela"
-- **Connection router** — hands the live stream to the laptop on detection; resumes control after session closure
-- **Database** — stores full conversation transcripts and user profiles
-- **Web / config server** — hosts the chat history viewer and system settings interface
-
-### Server 2 — Laptop responsibilities
-
-- **Gemma 4 E4B (VLM)** — accepts raw audio natively; no separate STT engine required
-- **TTS engine** — converts token output to audio chunks gated by sentence boundary, streamed in real time
-- **Session management** — active listening loop, unified silence counter, follow-up window, session closure
+| Node | Role | Key Tasks |
+|---|---|---|
+| **ESP32-S3 / Android** | Client | Microphone input, speaker output, WiFi transport, WiFiManager provisioning |
+| **Raspberry Pi 5** | Orchestrator + DB | Wake word detection, stream routing, chat history, web/config server |
+| **Laptop** | AI Engine | LLM inference (Gemma 4 E4B), TTS synthesis, session management, audio streaming |
 
 ---
 
-## Operational Flow
+## Hardware Requirements
 
-### States overview
+| Component | Spec |
+|---|---|
+| Client | ESP32-S3 (with mic + speaker) **or** Android device |
+| Orchestrator | Raspberry Pi 5 — 4 GB RAM, 512 GB SSD |
+| AI Engine | Laptop with AMD Ryzen 7 8840HS, 24 GB RAM (or equivalent) |
+| Network | All nodes on the same local WiFi network |
+
+---
+
+## Software Stack
+
+| Layer | Technology |
+|---|---|
+| Client firmware | C++ (ESP32 Arduino / IDF) |
+| Android client | Java / Kotlin |
+| Pi orchestrator | Python |
+| AI engine | Python |
+| LLM | Gemma 4 E4B (Vision-Language Model) |
+| Wake word | Configurable engine on Pi (e.g. openWakeWord) |
+| TTS | Configurable engine on Laptop |
+| Database | SQLite (chat history on Pi) |
+| Config UI | Web server hosted on Pi |
+
+---
+
+## Conversation Flow
 
 ```
-                     ┌──────────────────────┐
-                ┌───>│  Passive listening   │<──────────────────────────┐
-                │    │  Pi owns stream      │                           │
-                │    └──────────┬───────────┘                           │
-                │               │ "Vela" detected                       │
-                │               v                                       │
-                │    ┌──────────────────────┐                           │
-                │    │  Play audio cue      │                           │
-                │    │  "Come posso esserti │                           │
-                │    │   utile?"            │                           │
-                │    └──────────┬───────────┘                           │
-                │               │                                       │
-                │               v                                       │
-                │    ┌──────────────────────┐   silence > 8 s &         │
-                │    │  Active listening    │── never spoke ────────────┘
-                │    │  laptop owns stream  │
-                │    └──────────┬───────────┘
-                │               │ speech ended
-                │               v
-                │    ┌──────────────────────┐
-                │    │  Generate response   │
-                │    │  Gemma 4 E4B ──> TTS │<─────────────────┐
-                │    │  ──> stream chunks   │                  │
-                │    └──────────┬───────────┘                  │
-                │               │                              │
-                │               v                              │
-                │    ┌──────────────────────┐ speech detected  │
-                │    │  Follow-up window    │──────────────────┘
-                │    │  silence counter     │
-                │    │  resets to 0         │
-                │    └──────────┬───────────┘
-                │               │ silence > 8 s
-                │               v
-                │    ┌──────────────────────┐
-                └────│  Close session       │
-                     │  send transcript → Pi│
-                     └──────────────────────┘
+┌──────────────────────┐
+│   Passive listening  │<──────────────────────────────────┐
+│   Pi owns stream     │                                   │
+└──────────┬───────────┘                                   │
+           │ "Vela" detected                               │
+           v                                               │
+┌──────────────────────┐                                   │
+│   Play audio cue     │                                   │
+│   "Come posso        │                                   │
+│    esserti utile?"   │                                   │
+└──────────┬───────────┘                                   │
+           │                                               │
+           v                                               │
+┌──────────────────────┐   silence > 8 s &                 │
+│   Active listening   │── never spoke ────────────────────┘
+│   laptop owns stream │
+└──────────┬───────────┘
+           │ speech ended
+           v
+┌──────────────────────┐
+│   Generate response  │<──────────────────────┐
+│   Gemma 4 E4B → TTS  │                       │
+│   → stream chunks    │                       │
+└──────────┬───────────┘                       │
+           │                                   │
+           v                                   │
+┌──────────────────────┐   speech detected     │
+│   Follow-up window   │───────────────────────┘
+│   silence counter    │
+│   resets to 0        │
+└──────────┬───────────┘
+           │ silence > 8 s
+           v
+┌──────────────────────┐
+│   Close session      │──> transcript saved to Pi DB
+└──────────────────────┘
 ```
 
-> **Silence counter:** one shared timer. If the user never spoke after the wake word, the session times out at 8 s. The same 8 s threshold applies during the follow-up window after response playback ends.
+**Step-by-step / Passo dopo passo:**
+
+1. **Passive listening** — The Pi continuously listens to the audio stream from the client. The laptop is idle.
+2. **Wake word** — On detecting *"Vela"*, the Pi plays an audio cue (*"Come posso esserti utile?"*) and hands the stream to the laptop.
+3. **Active listening** — The laptop listens for user speech. If silence exceeds 8 seconds and the user never spoke, the session is silently dropped and the Pi resumes passive listening.
+4. **Response generation** — After the user finishes speaking, Gemma 4 E4B generates a response. The TTS engine synthesises it and streams audio chunks back to the client in real time.
+5. **Follow-up window** — After the response, a silence counter starts. Any detected speech resets it to 0, looping back to response generation (no need to say *"Vela"* again).
+6. **Session close** — After 8 seconds of silence with no follow-up, the session closes. The full transcript is sent to the Pi and stored in the database.
 
 ---
 
-### 1. Setup & profile sync
+## Setup
 
-On first boot the ESP32 opens a WiFiManager access point. After the user enters network credentials, the client connects to the Raspberry Pi and downloads the user profile and system configuration.
+> ⚠️ *Detailed installation instructions will be added per-node in their respective subdirectories.*
 
-### 2. Passive listening
+### General prerequisites
 
-The client streams audio continuously to the Pi. The Pi's wake word engine analyses the stream in real time. Nothing is forwarded to the laptop during this phase.
+- All three nodes must be on the same local network.
+- Python 3.10+ on Pi and Laptop.
+- Arduino IDE or ESP-IDF for the ESP32-S3 firmware.
+- Android Studio for the Android client.
 
-### 3. Wake word detected
+### Quick start order
 
-When "Vela" is recognised, the Pi routes the live audio connection to the laptop and immediately sends an audio cue back to the client: *"Come posso esserti utile?"* The silence counter starts at zero and `neverTalked` is set to `true`.
+1. Flash the ESP32-S3 firmware **or** install the Android APK.
+2. Configure WiFi credentials via the Pi's web config interface (WiFiManager).
+3. Start the orchestrator service on the Pi.
+4. Start the AI engine service on the Laptop.
+5. Say **"Vela"** — the assistant will respond *"Come posso esserti utile?"*.
 
-### 4. Active listening
+---
 
-The laptop buffers incoming audio. If speech is detected and then ends, the system moves to response generation and sets `neverTalked = false`. The silence counter increments each second in parallel. If it exceeds 8 s while `neverTalked` is still `true` — the user never spoke after the wake word — the session times out and routing returns to the Pi.
+## Project Structure
 
-### 5. Response generation
+```
+vela/
+├── client/
+│   ├── esp32/          # C++ firmware (ESP32-S3)
+│   └── android/        # Java/Kotlin Android app
+├── orchestrator/       # Python — Raspberry Pi 5
+│   ├── wake_word/      # Wake word engine integration
+│   ├── router/         # Stream handoff logic
+│   ├── database/       # SQLite chat history
+│   └── web/            # Config web server
+├── engine/             # Python — Laptop AI engine
+│   ├── llm/            # Gemma 4 E4B inference
+│   ├── tts/            # Text-to-speech engine
+│   └── session/        # Session & silence management
+└── README.md
+```
 
-Gemma 4 E4B processes the buffered audio natively — no speech-to-text conversion occurs. As the model emits text tokens they are piped into the TTS engine, which releases an audio chunk each time it reaches a sentence boundary. Chunks stream to the client immediately for low-latency playback.
+---
 
-### 6. Follow-up window & session closure
+## Glossary
 
-Once the final audio chunk is sent the silence counter resets to zero. If the user speaks within 8 s, the new audio is appended to the session context and the generation cycle repeats. If 8 s of silence elapse, the laptop sends the full transcript to the Pi for storage and routing returns to passive listening.
+| Term | Meaning |
+|---|---|
+| **Wake word** | The trigger phrase (*"Vela"*) that activates the assistant |
+| **Stream handoff** | The act of transferring ownership of the audio stream from Pi to Laptop (and back) |
+| **Follow-up window** | The 8-second silence window after a response, during which the user can continue without re-triggering the wake word |
+| **VLM** | Vision-Language Model — Gemma 4 E4B, capable of understanding both text and images |
+| **TTS** | Text-to-Speech — converts the LLM's text response into spoken audio |
+| **WiFiManager** | Library that allows the ESP32 to be provisioned with WiFi credentials via a captive portal |
+
+---
+
+*Progetto di Informatica per l'Esame di Stato · Vela © 2025*
