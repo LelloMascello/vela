@@ -1,4 +1,4 @@
-# 🌟 Vela — Assistente Vocale Distribuito / Distributed Voice Assistant
+# Vela — Assistente Vocale Distribuito / Distributed Voice Assistant
 
 > Progetto per l'Esame di Stato · *Maturità 2025*
 > 
