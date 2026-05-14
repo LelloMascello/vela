@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vela</string>
+    <string name="hint_pi_host">IP Raspberry Pi (es. 192.168.1.42)</string>
+    <string name="hint_username">Nome utente</string>
+    <string name="hint_password">Password</string>
+    <string name="btn_connect">Connetti</string>
+    <string name="btn_disconnect">Disconnetti</string>
+    <string name="btn_retry">Riprova</string>
+</resources>

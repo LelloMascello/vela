@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vela — Create Account</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0f14;
+      --surface:   #161a22;
+      --border:    #262c3a;
+      --accent:    #4f8ef7;
+      --accent-h:  #3a76e0;
+      --danger:    #e05454;
+      --text:      #e2e6f0;
+      --muted:     #7a8499;
+      --radius:    12px;
+    }
+
+    body {
+      background: var(--bg);
+      color:      var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display:    flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background:    var(--surface);
+      border:        1px solid var(--border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 420px;
+      padding: 2.5rem 2rem;
+    }
+
+    /* ── Logo ── */
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      margin-bottom: 2rem;
+    }
+    .logo-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, var(--accent), #8b5cf6);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.4rem;
+    }
+    .logo-text { font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; }
+    .logo-sub  { font-size: .78rem; color: var(--muted); margin-top: .1rem; }
+
+    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: .35rem; }
+    .subtitle { font-size: .88rem; color: var(--muted); margin-bottom: 1.75rem; }
+
+    /* ── Flash messages ── */
+    .flash {
+      background:    rgba(224, 84, 84, .12);
+      border:        1px solid rgba(224, 84, 84, .35);
+      border-radius: 8px;
+      padding: .7rem 1rem;
+      font-size: .87rem;
+      color: #f5a0a0;
+      margin-bottom: 1.4rem;
+      display: flex;
+      align-items: flex-start;
+      gap: .5rem;
+    }
+    .flash::before { content: "⚠"; flex-shrink: 0; }
+
+    /* ── Form fields ── */
+    .field { margin-bottom: 1.1rem; }
+    label {
+      display: block;
+      font-size: .83rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: .4rem;
+      letter-spacing: .02em;
+      text-transform: uppercase;
+    }
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      background:    #1e2330;
+      border:        1px solid var(--border);
+      border-radius: 8px;
+      padding: .7rem 1rem;
+      color:         var(--text);
+      font-size: .95rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus  { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+
+    .hint {
+      font-size: .78rem;
+      color: var(--muted);
+      margin-top: .35rem;
+    }
+
+    /* ── Password strength bar ── */
+    .strength-wrap { margin-top: .45rem; }
+    .strength-bar  {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .strength-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width .3s, background .3s;
+      width: 0%;
+    }
+    .strength-label {
+      font-size: .76rem;
+      color: var(--muted);
+      margin-top: .3rem;
+    }
+
+    /* ── Submit ── */
+    button[type="submit"] {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: .8rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: .5rem;
+      transition: background .2s, transform .1s;
+    }
+    button[type="submit"]:hover  { background: var(--accent-h); }
+    button[type="submit"]:active { transform: scale(.98); }
+
+    /* ── Footer ── */
+    .footer {
+      text-align: center;
+      font-size: .82rem;
+      color: var(--muted);
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+
+  <div class="logo">
+    <div class="logo-icon">⛵</div>
+    <div>
+      <div class="logo-text">Vela</div>
+      <div class="logo-sub">Voice Assistant</div>
+    </div>
+  </div>
+
+  <h1>Create your account</h1>
+  <p class="subtitle">Register to connect your device to the Vela network.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="flash">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="POST" action="/register" id="reg-form">
+
+    <div class="field">
+      <label for="username">Username</label>
+      <input
+        type="text" id="username" name="username"
+        placeholder="e.g. marco_rossi"
+        autocomplete="username" required
+        minlength="3" maxlength="32"
+        pattern="[a-zA-Z0-9_\-]{3,32}"
+        title="3–32 characters: letters, numbers, _ or -"
+      />
+      <div class="hint">3–32 characters — letters, numbers, _ or -</div>
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <input
+        type="password" id="password" name="password"
+        placeholder="At least 8 characters"
+        autocomplete="new-password" required minlength="8"
+      />
+      <div class="strength-wrap">
+        <div class="strength-bar"><div class="strength-fill" id="str-fill"></div></div>
+        <div class="strength-label" id="str-label"></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="password2">Confirm password</label>
+      <input
+        type="password" id="password2" name="password2"
+        placeholder="Repeat your password"
+        autocomplete="new-password" required minlength="8"
+      />
+      <div class="hint" id="match-hint"></div>
+    </div>
+
+    <button type="submit" id="submit-btn">Create account</button>
+  </form>
+
+  <div class="footer">Already have an account? Use your device to log in.</div>
+</div>
+
+<script>
+/* ── Password strength ── */
+const pwInput  = document.getElementById("password");
+const pw2Input = document.getElementById("password2");
+const fill     = document.getElementById("str-fill");
+const label    = document.getElementById("str-label");
+const hint     = document.getElementById("match-hint");
+
+function calcStrength(pw) {
+  let score = 0;
+  if (pw.length >= 8)  score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+  if (/[0-9]/.test(pw)) score++;
+  if (/[^a-zA-Z0-9]/.test(pw)) score++;
+  return score;
+}
+
+const LEVELS = [
+  { pct: "0%",   color: "transparent", text: "" },
+  { pct: "25%",  color: "#e05454",     text: "Weak" },
+  { pct: "50%",  color: "#f59e0b",     text: "Fair" },
+  { pct: "75%",  color: "#3b82f6",     text: "Good" },
+  { pct: "100%", color: "#22c55e",     text: "Strong" },
+];
+
+pwInput.addEventListener("input", () => {
+  const s = Math.min(4, calcStrength(pwInput.value));
+  const lv = LEVELS[s];
+  fill.style.width      = lv.pct;
+  fill.style.background = lv.color;
+  label.textContent     = lv.text;
+  label.style.color     = lv.color;
+  checkMatch();
+});
+
+/* ── Password match ── */
+pw2Input.addEventListener("input", checkMatch);
+
+function checkMatch() {
+  if (!pw2Input.value) { hint.textContent = ""; return; }
+  if (pw2Input.value === pwInput.value) {
+    hint.textContent  = "✓ Passwords match";
+    hint.style.color  = "#22c55e";
+  } else {
+    hint.textContent  = "✗ Passwords do not match";
+    hint.style.color  = "#e05454";
+  }
+}
+</script>
+</body>
+</html>

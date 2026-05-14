@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background -->
+    <color name="bg_dark">#FF0F1117</color>
+    <color name="surface">#FF1C1F2A</color>
+    <color name="error_bg">#331A0A0A</color>
+
+    <!-- Text -->
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#99FFFFFF</color>
+
+    <!-- Brand accent (blue-violet) -->
+    <color name="accent">#FF6C63FF</color>
+
+    <!-- State colours for mic icon -->
+    <color name="state_idle">#FF555577</color>
+    <color name="state_listening">#FF4FC3F7</color>   <!-- light blue  -->
+    <color name="state_active">#FF6C63FF</color>      <!-- brand violet-->
+    <color name="state_responding">#FF81C784</color>  <!-- green       -->
+    <color name="state_error">#FFEF5350</color>       <!-- red         -->
+</resources>
