@@ -32,7 +32,7 @@ STANDBY_PORT = 9000
 WS_PORT       = 8765          # port main.py will bind for WebSocket clients
 
 # llama-server binary & model paths
-LLAMA_BIN    = Path.home() / "llama.cpp/.build/bin/llama-server"
+LLAMA_BIN    = Path.home() / "llama.cpp/build/bin/llama-server"
 LLAMA_MODEL  = Path.home() / "llama.cpp/mymodels/gemma-4-E2B-it-Q4_K_M.gguf"
 LLAMA_MMPROJ = Path.home() / "llama.cpp/mymodels/mmproj-F16.gguf"
 LLAMA_HOST   = "127.0.0.1"

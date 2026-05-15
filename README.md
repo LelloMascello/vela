@@ -156,7 +156,18 @@
 ```
 vela/
 ├── client/
-│   ├── esp32/                              # C++ firmware (ESP32-S3)
+│   ├── VelaFirmware/
+│   │   ├── VelaFirmware.ino      # Sketch principale (setup + loop + state machine)
+│   │   ├── config.h              # Pin, costanti, parametri audio
+│   │   ├── vela_state.h          # Enum VelaState, struct VelaCredentials, AuthInfo
+│   │   ├── led.h                 # Pattern LED non-bloccanti
+│   │   ├── nvs_creds.h           # Salva/carica credenziali in NVS (Preferences)
+│   │   ├── wifi_provision.h      # WiFiManager: AP captive portal + parametri custom
+│   │   ├── auth_client.h         # HTTP POST /auth/login → JWT
+│   │   ├── audio_i2s.h           # I2S mic (INMP441) + speaker (MAX98357A)
+│   │   ├── router_ws.h           # WebSocket client per router.py
+│   │   ├── engine_ws.h           # WebSocket client per main.py
+│   │   └── base64_decode.h       # Decodifica base64 per audio WAV dal server
 │   └── VelaApp/
 │       ├── app/src/main/
 │       │   ├── AndroidManifest.xml
