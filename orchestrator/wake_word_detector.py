@@ -73,8 +73,55 @@ def _drop_model(client_id: str) -> None:
             print(f"[detector] Released model for client={client_id!r}")
 
 
-# Pre-load a "template" model at startup to trigger the one-time download
-# and to verify the model name is valid before any client connects.
+# ─── Download model if not already present ───────────────────────────────────
+
+def _ensure_model_downloaded() -> None:
+    """
+    openWakeWord does NOT bundle the ONNX model files — they must be
+    downloaded separately.  This function checks whether the file already
+    exists and, if not, downloads it via the library's own utility.
+    """
+    import openwakeword
+    import openwakeword.utils as oww_utils
+
+    # Determine where openwakeword stores its models
+    models_dir = Path(openwakeword.__file__).parent / "resources" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    # Expected filename pattern used by openwakeword 0.6.x
+    expected = models_dir / f"{WAKE_WORD}_v0.1.onnx"
+
+    if expected.exists():
+        print(f"[detector] Model already present: {expected}")
+        return
+
+    print(f"[detector] Model not found at {expected}")
+    print(f"[detector] Downloading '{WAKE_WORD}' model (≈2 MB) …")
+    try:
+        # download_models accepts a list of model names
+        oww_utils.download_models(model_names=[WAKE_WORD])
+        if expected.exists():
+            print(f"[detector] ✓ Downloaded to {expected}")
+        else:
+            # Some versions write a different filename — list what arrived
+            found = list(models_dir.glob(f"*{WAKE_WORD}*"))
+            if found:
+                print(f"[detector] ✓ Downloaded: {[f.name for f in found]}")
+            else:
+                raise FileNotFoundError(
+                    f"download_models() ran but no file matching "
+                    f"'{WAKE_WORD}' found in {models_dir}"
+                )
+    except Exception as exc:
+        print(f"[detector] ✗ Download failed: {exc}")
+        print("[detector]   Check your internet connection and try again.")
+        raise SystemExit(1)
+
+
+# Pre-load a "template" model at startup to verify the model loads correctly
+# before any client connects.
+_ensure_model_downloaded()
+
 print(f"[detector] Pre-loading wake word model '{WAKE_WORD}' …")
 try:
     _template_model = Model(

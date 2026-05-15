@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "com.vela.app-mergeDebugResources-35:/layout/activity_main.xml",
+        "source": "com.vela.app-main-38:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.vela.app-mergeDebugResources-35:/layout/activity_login.xml",
+        "source": "com.vela.app-main-38:/layout/activity_login.xml"
+    }
+]
