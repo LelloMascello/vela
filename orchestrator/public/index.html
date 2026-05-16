@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auth</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+  <div class="card">
+    <div class="tabs">
+      <button class="tab active" data-tab="login">Login</button>
+      <button class="tab" data-tab="signup">Sign Up</button>
+    </div>
+
+    <div id="login" class="form-section">
+      <input type="text" id="login-username" placeholder="Username">
+      <input type="password" id="login-password" placeholder="Password">
+      <button onclick="handleLogin()">Login</button>
+    </div>
+
+    <div id="signup" class="form-section hidden">
+      <input type="text" id="signup-username" placeholder="Username">
+      <input type="password" id="signup-password" placeholder="Password">
+      <button onclick="handleSignup()">Sign up</button>
+    </div>
+
+    <p id="message"></p>
+  </div>
+
+  <script src="/public/app.js"></script>
+</body>
+</html>

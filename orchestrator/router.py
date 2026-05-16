@@ -1,9 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import httpx
 import numpy as np
 
-from auth import authenticate
+from auth import login
 
 app = FastAPI()
 security = HTTPBasic()
@@ -19,15 +19,23 @@ async def _fetch_frame_length(client: httpx.AsyncClient) -> int:
 
 
 @app.post("/auth")
-async def authentication(credentials: HTTPBasicCredentials = Depends(security)):
-    result = authenticate(credentials.username, credentials.password)
+async def authentication(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(security)
+):
+    result = login(credentials.username, credentials.password)
     if not result:
         raise HTTPException(
             status_code=401,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
-    return result
+
+    host = request.headers.get("host", "localhost")
+    return {
+        "ws_url": f"ws://{host}/ws",
+        "username": result["username"],
+    }
 
 
 @app.websocket("/ws")
