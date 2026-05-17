@@ -13,6 +13,7 @@ Vela is a system designed for real-time audio processing, featuring user authent
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
 *   **`/ready` (GET):** Launches necessary backend services (LLM server and TTS server) and reports the current operational status, IP, and port.
 *   **`/ws` (WebSocket):** Implements the full voice pipeline: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client.
+*   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
 
 ### Text-to-Speech Engine (`engine/text_to_speech.py`)
 
