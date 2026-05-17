@@ -6,6 +6,8 @@
 
 Vela is a system designed for real-time audio processing, featuring user authentication, a WebSocket interface for audio streaming, and an integrated voice pipeline. The system utilizes a FastAPI backend for handling real-time connections, integrating a Silero VAD for speech detection, a local LLM (Gemma 4), and a Text-to-Speech service to create a complete voice interaction pipeline.
 
+The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation (guided by a system prompt to ensure voice-friendly, concise responses), the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client.
+
 ## Components
 
 ### Engine Core (`engine/main.py`)
@@ -44,3 +46,5 @@ The application is served via FastAPI, mounting static files from the `/public` 
         *   **Login:** POST to `/login` (requires username and password).
         *   **Authentication Check:** The `/auth` endpoint uses the `login` function to validate credentials and returns a WebSocket URL and the authenticated username upon success.
 *   **Testing Interface:** A dedicated testing interface (`orchestrator/test_ui.html`) is available to test wake word detection functionality.
+
+---
