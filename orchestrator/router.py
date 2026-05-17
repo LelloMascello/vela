@@ -8,8 +8,18 @@ from auth import login
 app = FastAPI()
 security = HTTPBasic()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 DETECTOR_URL = "http://localhost:8001"
-OTHER_SERVER_URL = "http://other-server/ready"
+OTHER_SERVER_URL = "http://localhost:8002/ready"
 
 
 async def _fetch_frame_length(client: httpx.AsyncClient) -> int:
