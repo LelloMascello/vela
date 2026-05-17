@@ -15,7 +15,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
-# Structured output with millisecond timestamps.
 # Each subsystem uses its own logger so you can grep / filter by name:
 #   [main]       → startup, /ready endpoint
 #   [services]   → llama.cpp / TTS process lifecycle
@@ -24,8 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 #   [llama.cpp]  → inference requests, token stream, timing
 #   [tts]        → synthesis requests, audio size, timing
 #
-# To raise/lower verbosity for a single subsystem at runtime, e.g.:
-#   logging.getLogger("vad").setLevel(logging.WARNING)
+# Silence a noisy subsystem at runtime, e.g.:
+#   logging.getLogger("websocket").setLevel(logging.INFO)
 
 LOG_FORMAT = "%(asctime)s.%(msecs)03d  %(levelname)-7s  [%(name)-10s]  %(message)s"
 logging.basicConfig(
@@ -55,6 +54,15 @@ app.add_middleware(
 
 TEXT_TO_SPEECH_URL = "http://localhost:8003/"
 INFERENCE_URL      = "http://localhost:8080/v1/chat/completions"
+
+# System prompt sent with every inference request.
+# Instructs the model to match the user's language and keep answers voice-friendly.
+SYSTEM_PROMPT = (
+    "You are a helpful voice assistant. "
+    "Always respond in the same language the user spoke in. "
+    "Keep answers concise and conversational — your response will be spoken aloud, "
+    "not displayed as text, so avoid markdown, bullet points, and long lists."
+)
 
 # Silero VAD model — loaded once at startup and shared across all connections.
 # Each connection gets its own stateful VADIterator wrapping this read-only model.
@@ -107,9 +115,8 @@ def _encode_pcm_as_wav(pcm_f32: np.ndarray, sample_rate: int) -> bytes:
     """
     Encode a float32 numpy array of mono PCM samples as a WAV file in memory.
     Uses only Python's stdlib wave module — no torchaudio / torchcodec required.
-    Returns raw WAV bytes.
     """
-    pcm_int16 = (pcm_f32 * 32767.0).clip(-32768, 32767).astype(np.int16)
+    pcm_int16  = (pcm_f32 * 32767.0).clip(-32768, 32767).astype(np.int16)
     wav_buffer = io.BytesIO()
     with wave.open(wav_buffer, "wb") as wav_writer:
         wav_writer.setnchannels(1)    # mono
@@ -249,7 +256,19 @@ async def synthesize_and_forward_audio(
     http_client:     httpx.AsyncClient,
     sentence_phrase: str,
 ) -> None:
-    """Send a text phrase to the TTS service and forward the resulting WAV audio + text to the client."""
+    """
+    Send a text phrase to the TTS service and forward the resulting WAV + text to the client.
+
+    Protocol:
+      • Before the first phrase of a turn  → server sends {"type": "tts_start"}
+        (sent once by the caller before the first call to this function).
+      • Each phrase                        → {"type": "chunk", "text": ..., "audio": <b64 wav>}
+      • After the last phrase of a turn    → server sends {"type": "tts_end"}
+        (sent once by the caller after the last call to this function).
+
+    The client mutes its microphone while tts_start … tts_end to prevent
+    TTS speaker output from being picked up by the mic and triggering a false VAD turn.
+    """
     phrase_len = len(sentence_phrase)
     log_tts.info(
         "→ request  | chars=%d | text=%r",
@@ -297,6 +316,12 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
       client mic (PCM) → VAD → llama.cpp (Gemma 4) → TTS → client (text + WAV).
 
     Expected input: 16-bit signed PCM, mono, 16 kHz, 512 samples per chunk (1 024 bytes).
+
+    Server → client message types:
+      {"type": "tts_start"}                              mic mute begins
+      {"type": "chunk",  "text": str, "audio": b64|null} one TTS phrase
+      {"type": "tts_end"}                                mic mute ends
+      {"type": "done",   "full_text": str}               turn complete
     """
     await websocket.accept()
     active_websocket_connections.add(websocket)
@@ -394,7 +419,7 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                     rms_amplitude,
                 )
 
-                # ── Encode captured speech as WAV → base64 for llama.cpp ────────
+                # Encode captured speech as WAV → base64 for llama.cpp.
                 # Uses stdlib wave — no torchaudio / torchcodec dependency.
                 wav_raw_bytes     = _encode_pcm_as_wav(complete_speech_f32, MIC_SAMPLE_RATE)
                 speech_wav_base64 = base64.b64encode(wav_raw_bytes).decode()
@@ -406,9 +431,16 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                 )
 
                 # ── 4. Send audio to llama.cpp (Gemma 4 E2B) in streaming mode ──
+                # The system prompt instructs the model to:
+                #   • reply in the same language the user spoke
+                #   • keep answers concise and voice-friendly (no markdown / lists)
                 inference_request_payload = {
                     "model": "gemma-4-e2b",
                     "messages": [
+                        {
+                            "role":    "system",
+                            "content": SYSTEM_PROMPT,
+                        },
                         {
                             "role": "user",
                             "content": [
@@ -420,13 +452,12 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                                     },
                                 }
                             ],
-                        }
+                        },
                     ],
                     "stream":     True,
                     "max_tokens": 512,
                 }
 
-                # Log the payload without the large base64 audio blob.
                 log_llm.info(
                     "→ request | turn=#%d | model=%s | wav_b64_chars=%d | max_tokens=%d",
                     speech_turns_handled,
@@ -442,6 +473,7 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                 token_count           = 0
                 phrase_count          = 0
                 first_token_logged    = False
+                tts_started           = False   # tracks whether tts_start was sent this turn
 
                 async with http_client.stream(
                     "POST", INFERENCE_URL, json=inference_request_payload
@@ -498,6 +530,13 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                             pending_tts_phrase = ""
                             phrase_count      += 1
                             if ready_phrase:
+                                # Send tts_start once before the very first phrase so the
+                                # client knows to mute the mic for the duration of playback.
+                                if not tts_started:
+                                    log_ws.debug("→ send tts_start | turn=#%d", speech_turns_handled)
+                                    await websocket.send_json({"type": "tts_start"})
+                                    tts_started = True
+
                                 log_llm.info(
                                     "Sentence boundary — flushing phrase #%d | chars=%d | tokens_so_far=%d",
                                     phrase_count,
@@ -511,14 +550,19 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                 # Flush any trailing text that did not end with sentence punctuation.
                 if pending_tts_phrase.strip():
                     phrase_count += 1
+                    ready_phrase  = pending_tts_phrase.strip()
+
+                    if not tts_started:
+                        log_ws.debug("→ send tts_start | turn=#%d", speech_turns_handled)
+                        await websocket.send_json({"type": "tts_start"})
+                        tts_started = True
+
                     log_llm.info(
                         "Flushing trailing phrase #%d | chars=%d",
                         phrase_count,
-                        len(pending_tts_phrase.strip()),
+                        len(ready_phrase),
                     )
-                    await synthesize_and_forward_audio(
-                        websocket, http_client, pending_tts_phrase.strip()
-                    )
+                    await synthesize_and_forward_audio(websocket, http_client, ready_phrase)
 
                 log_llm.info(
                     "← complete | turn=#%d | tokens=%d | phrases=%d | total_chars=%d | elapsed=%.3f s",
@@ -528,6 +572,13 @@ async def voice_pipeline_endpoint(websocket: WebSocket):
                     len(complete_llm_response),
                     time.perf_counter() - llm_start,
                 )
+
+                # Send tts_end so the client knows it can un-mute the mic.
+                # If the model produced no audio at all (empty response), tts_start was
+                # never sent, so we skip tts_end too to keep the protocol symmetric.
+                if tts_started:
+                    log_ws.debug("→ send tts_end | turn=#%d", speech_turns_handled)
+                    await websocket.send_json({"type": "tts_end"})
 
                 # Signal to the client that this turn is fully complete.
                 done_payload = {"type": "done", "full_text": complete_llm_response}

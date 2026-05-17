@@ -18,6 +18,7 @@
       --accent:   #534AB7;
       --accent-l: #EEEDFE;
       --danger:   #E24B4A;
+      --warn:     #D97706;
       --success:  #1D9E75;
       --radius:   12px;
       --radius-s: 8px;
@@ -34,6 +35,7 @@
         --accent:   #AFA9EC;
         --accent-l: #26215C;
         --danger:   #F09595;
+        --warn:     #FBBF24;
         --success:  #5DCAA5;
       }
     }
@@ -49,12 +51,7 @@
       padding: 2rem 1rem 4rem;
     }
 
-    h1 {
-      font-size: 18px;
-      font-weight: 500;
-      margin-bottom: .25rem;
-    }
-
+    h1 { font-size: 18px; font-weight: 500; margin-bottom: .25rem; }
     .subtitle { font-size: 13px; color: var(--txt3); margin-bottom: 2rem; }
 
     /* ── Server config ── */
@@ -81,28 +78,23 @@
       font-family: monospace;
     }
 
-    /* ── Status pill ── */
-    .status-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 1.25rem;
-    }
+    /* ── Status ── */
+    .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 1.25rem; }
     .status-dot {
       width: 8px; height: 8px;
       border-radius: 50%;
       background: var(--txt3);
       transition: background .3s;
+      flex-shrink: 0;
     }
-    .status-dot.ready    { background: var(--success); }
-    .status-dot.error    { background: var(--danger); }
-    .status-dot.busy     { background: var(--accent); animation: pulse 1s infinite; }
-    @keyframes pulse {
-      0%,100% { opacity:1; } 50% { opacity:.35; }
-    }
+    .status-dot.ready   { background: var(--success); }
+    .status-dot.error   { background: var(--danger); }
+    .status-dot.busy    { background: var(--accent); animation: pulse 1s infinite; }
+    .status-dot.muted   { background: var(--warn);   animation: pulse .6s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
     .status-label { font-size: 13px; color: var(--txt2); }
 
-    /* ── Waveform / VU meter ── */
+    /* ── VU meter ── */
     canvas#vu-meter {
       width: 100%;
       max-width: 640px;
@@ -115,11 +107,7 @@
     }
 
     /* ── Controls ── */
-    .controls {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 1.75rem;
-    }
+    .controls { display: flex; gap: 10px; margin-bottom: 1.75rem; flex-wrap: wrap; }
 
     button {
       display: inline-flex;
@@ -137,20 +125,10 @@
     button:hover  { background: var(--bg); }
     button:active { transform: scale(.97); }
     button:disabled { opacity: .4; cursor: not-allowed; }
-
-    button.primary {
-      background: var(--accent);
-      color: #fff;
-      border-color: transparent;
-    }
+    button.primary { background: var(--accent); color: #fff; border-color: transparent; }
     button.primary:hover { opacity: .88; background: var(--accent); }
-
-    button.danger {
-      background: var(--danger);
-      color: #fff;
-      border-color: transparent;
-    }
-    button.danger:hover { opacity: .88; background: var(--danger); }
+    button.danger  { background: var(--danger);  color: #fff; border-color: transparent; }
+    button.danger:hover  { opacity: .88; background: var(--danger); }
 
     /* ── Conversation ── */
     .conversation {
@@ -160,12 +138,7 @@
       flex-direction: column;
       gap: 1rem;
     }
-
-    .turn {
-      display: flex;
-      flex-direction: column;
-      gap: .35rem;
-    }
+    .turn { display: flex; flex-direction: column; gap: .35rem; }
     .turn-label {
       font-size: 11px;
       font-weight: 500;
@@ -188,32 +161,9 @@
     .bubble.assistant { border-left: 2px solid var(--accent); }
     .bubble.streaming { opacity: .75; }
 
-    /* mini audio player */
-    .audio-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: var(--txt2);
-    }
-    .audio-bar button {
-      padding: .25rem .5rem;
-      font-size: 12px;
-    }
-
-    /* Log panel */
-    details {
-      width: 100%;
-      max-width: 640px;
-      margin-top: 2rem;
-    }
-    summary {
-      font-size: 12px;
-      color: var(--txt3);
-      cursor: pointer;
-      user-select: none;
-      margin-bottom: .5rem;
-    }
+    /* ── Debug log ── */
+    details { width: 100%; max-width: 640px; margin-top: 2rem; }
+    summary { font-size: 12px; color: var(--txt3); cursor: pointer; user-select: none; margin-bottom: .5rem; }
     #debug-log {
       font-family: monospace;
       font-size: 11px;
@@ -232,7 +182,7 @@
 <body>
 
 <h1>Voice pipeline tester</h1>
-<p class="subtitle">Tests mic → VAD → llama.cpp → TTS end-to-end</p>
+<p class="subtitle">mic → VAD → llama.cpp → TTS</p>
 
 <div class="config-bar">
   <label>Server</label>
@@ -248,20 +198,20 @@
 
 <div class="controls">
   <button id="btn-connect" class="primary">
-    <i class="ti ti-plug" aria-hidden="true"></i> Connect
+    <i class="ti ti-plug"></i> Connect
   </button>
   <button id="btn-toggle-mic" disabled>
-    <i class="ti ti-microphone" aria-hidden="true"></i> Start listening
+    <i class="ti ti-microphone"></i> Start listening
   </button>
   <button id="btn-disconnect" disabled>
-    <i class="ti ti-plug-x" aria-hidden="true"></i> Disconnect
+    <i class="ti ti-plug-x"></i> Disconnect
   </button>
 </div>
 
 <div class="conversation" id="conversation-container"></div>
 
 <details>
-  <summary><i class="ti ti-terminal-2" aria-hidden="true"></i> Debug log</summary>
+  <summary><i class="ti ti-terminal-2"></i> Debug log</summary>
   <div id="debug-log"></div>
 </details>
 
@@ -270,11 +220,10 @@
 const getEl = id => document.getElementById(id);
 
 const appendDebugLog = (...args) => {
-  const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
-  const logEl   = getEl('debug-log');
-  logEl.textContent += `[${new Date().toLocaleTimeString()}] ${message}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-  console.log(...args);
+  const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+  const el = getEl('debug-log');
+  el.textContent += `[${new Date().toLocaleTimeString()}] ${message}\n`;
+  el.scrollTop = el.scrollHeight;
 };
 
 /* ─── State ────────────────────────────────────────────────────────────────── */
@@ -283,57 +232,64 @@ let audioContext           = null;
 let pcmCaptureWorklet      = null;
 let microphoneStream       = null;
 let isMicrophoneActive     = false;
-let audioPlaybackQueue     = [];    // { blob, text }[]
-let isPlayingAudio         = false;
-let activeAssistantBubble  = null;  // The assistant bubble currently being streamed into.
 
-/* ─── Status helpers ───────────────────────────────────────────────────────── */
+// When true the server is playing TTS — the worklet keeps running but we
+// suppress sending PCM over the WebSocket to avoid acoustic echo loops.
+let isMicMutedForTtsPlayback = false;
+
+let audioPlaybackQueue     = [];   // { blob }[]
+let isPlayingAudio         = false;
+let activeAssistantBubble  = null;
+
+/* ─── Status ───────────────────────────────────────────────────────────────── */
 const updateStatusIndicator = (cssClass, message) => {
   getEl('status-indicator-dot').className = `status-dot ${cssClass}`;
   getEl('status-indicator-label').textContent = message;
 };
 
 /* ─── VU meter ─────────────────────────────────────────────────────────────── */
-const vuMeterCanvas  = getEl('vu-meter');
-const vuMeterCtx     = vuMeterCanvas.getContext('2d');
+const vuMeterCanvas = getEl('vu-meter');
+const vuMeterCtx    = vuMeterCanvas.getContext('2d');
 let   frequencyAnalyser = null;
 let   frequencyBinData  = null;
 
 function renderVuMeter() {
   requestAnimationFrame(renderVuMeter);
 
-  const canvasW = vuMeterCanvas.offsetWidth * devicePixelRatio;
-  const canvasH = vuMeterCanvas.offsetHeight * devicePixelRatio;
-  vuMeterCanvas.width  = canvasW;
-  vuMeterCanvas.height = canvasH;
-
-  vuMeterCtx.clearRect(0, 0, canvasW, canvasH);
+  const W = vuMeterCanvas.offsetWidth  * devicePixelRatio;
+  const H = vuMeterCanvas.offsetHeight * devicePixelRatio;
+  vuMeterCanvas.width  = W;
+  vuMeterCanvas.height = H;
+  vuMeterCtx.clearRect(0, 0, W, H);
 
   if (!frequencyAnalyser || !isMicrophoneActive) {
-    vuMeterCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--txt3').trim() || '#9c9b96';
-    const centerX = canvasW / 2, centerY = canvasH / 2, dotRadius = 4 * devicePixelRatio;
+    // Idle dot
+    vuMeterCtx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--txt3').trim();
     vuMeterCtx.beginPath();
-    vuMeterCtx.arc(centerX, centerY, dotRadius, 0, Math.PI * 2);
+    vuMeterCtx.arc(W / 2, H / 2, 4 * devicePixelRatio, 0, Math.PI * 2);
     vuMeterCtx.fill();
     return;
   }
 
   frequencyAnalyser.getByteFrequencyData(frequencyBinData);
-  const barWidth  = canvasW / frequencyBinData.length * 2.5;
-  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#534AB7';
+  const barW     = W / frequencyBinData.length * 2.5;
+  // While muted for TTS show bars in warning colour to give visual feedback
+  const barColor = isMicMutedForTtsPlayback
+    ? getComputedStyle(document.documentElement).getPropertyValue('--warn').trim()
+    : getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
   for (let i = 0; i < frequencyBinData.length; i++) {
-    const normalizedAmplitude = frequencyBinData[i] / 255;
-    const barHeight = normalizedAmplitude * canvasH;
-    vuMeterCtx.fillStyle = accentColor;
-    vuMeterCtx.globalAlpha = 0.6 + normalizedAmplitude * 0.4;
-    vuMeterCtx.fillRect(i * barWidth * 1.2, canvasH - barHeight, barWidth, barHeight);
+    const norm   = frequencyBinData[i] / 255;
+    const barH   = norm * H;
+    vuMeterCtx.fillStyle   = barColor;
+    vuMeterCtx.globalAlpha = 0.6 + norm * 0.4;
+    vuMeterCtx.fillRect(i * barW * 1.2, H - barH, barW, barH);
   }
   vuMeterCtx.globalAlpha = 1;
 }
 renderVuMeter();
 
-/* ─── AudioWorklet (inline blob) ──────────────────────────────────────────── */
+/* ─── AudioWorklet ─────────────────────────────────────────────────────────── */
 const CAPTURE_WORKLET_SOURCE = `
 class CaptureProcessor extends AudioWorkletProcessor {
   constructor() { super(); this._buf = []; }
@@ -362,13 +318,12 @@ getEl('btn-connect').addEventListener('click', async () => {
   getEl('btn-connect').disabled = true;
 
   try {
-    const httpResponse  = await fetch(`${serverBaseUrl}/ready`);
-    const readyPayload  = await httpResponse.json();
+    const httpResponse = await fetch(`${serverBaseUrl}/ready`);
+    const readyPayload = await httpResponse.json();
     appendDebugLog('Ready response:', readyPayload);
-
     if (!readyPayload.ready) throw new Error('Server returned ready=false');
 
-    const websocketUrl = readyPayload.websocket || `ws://127.0.0.1:8002/ws`;
+    const websocketUrl = readyPayload.websocket || 'ws://127.0.0.1:8002/ws';
     appendDebugLog('Connecting WebSocket:', websocketUrl);
     serverWebSocket = new WebSocket(websocketUrl);
     serverWebSocket.binaryType = 'arraybuffer';
@@ -376,9 +331,9 @@ getEl('btn-connect').addEventListener('click', async () => {
     serverWebSocket.onopen = () => {
       appendDebugLog('WebSocket connected');
       updateStatusIndicator('ready', 'Connected — click Start listening');
-      getEl('btn-toggle-mic').disabled  = false;
-      getEl('btn-disconnect').disabled  = false;
-      getEl('btn-connect').disabled     = true;
+      getEl('btn-toggle-mic').disabled = false;
+      getEl('btn-disconnect').disabled = false;
+      getEl('btn-connect').disabled    = true;
     };
 
     serverWebSocket.onmessage = handleIncomingServerMessage;
@@ -391,8 +346,7 @@ getEl('btn-connect').addEventListener('click', async () => {
     serverWebSocket.onclose = () => {
       appendDebugLog('WebSocket closed');
       updateStatusIndicator('', 'Disconnected');
-      // Stop the mic if the server drops the connection while the user is speaking,
-      // so the AudioWorklet doesn't keep running with nowhere to send PCM chunks.
+      // Stop mic if the server drops the connection while the user is speaking.
       stopMicrophone();
       resetInterfaceToIdle();
     };
@@ -404,13 +358,9 @@ getEl('btn-connect').addEventListener('click', async () => {
   }
 });
 
-/* ─── Start / stop mic ─────────────────────────────────────────────────────── */
+/* ─── Microphone ───────────────────────────────────────────────────────────── */
 getEl('btn-toggle-mic').addEventListener('click', async () => {
-  if (!isMicrophoneActive) {
-    await startMicrophone();
-  } else {
-    stopMicrophone();
-  }
+  isMicrophoneActive ? stopMicrophone() : await startMicrophone();
 });
 
 async function startMicrophone() {
@@ -432,13 +382,16 @@ async function startMicrophone() {
 
     pcmCaptureWorklet = new AudioWorkletNode(audioContext, 'capture-proc');
     pcmCaptureWorklet.port.onmessage = event => {
+      // Drop PCM while the server is playing back TTS to prevent acoustic echo.
+      // The worklet keeps running so there's no gap when the mic un-mutes.
+      if (isMicMutedForTtsPlayback) return;
       if (serverWebSocket?.readyState === WebSocket.OPEN)
         serverWebSocket.send(event.data);
     };
     microphoneSource.connect(pcmCaptureWorklet);
 
     isMicrophoneActive = true;
-    getEl('btn-toggle-mic').innerHTML = '<i class="ti ti-microphone-off" aria-hidden="true"></i> Stop listening';
+    getEl('btn-toggle-mic').innerHTML = '<i class="ti ti-microphone-off"></i> Stop listening';
     getEl('btn-toggle-mic').classList.add('danger');
     updateStatusIndicator('busy', 'Listening — speak now');
     appendDebugLog('Microphone active');
@@ -452,50 +405,63 @@ async function startMicrophone() {
 function stopMicrophone() {
   pcmCaptureWorklet?.disconnect();
   frequencyAnalyser?.disconnect();
-  microphoneStream?.getTracks().forEach(track => track.stop());
+  microphoneStream?.getTracks().forEach(t => t.stop());
   audioContext?.close();
 
-  frequencyAnalyser  = null;
-  frequencyBinData   = null;
-  pcmCaptureWorklet  = null;
-  microphoneStream   = null;
-  audioContext       = null;
-  isMicrophoneActive = false;
+  frequencyAnalyser        = null;
+  frequencyBinData         = null;
+  pcmCaptureWorklet        = null;
+  microphoneStream         = null;
+  audioContext             = null;
+  isMicrophoneActive       = false;
+  isMicMutedForTtsPlayback = false;
 
-  getEl('btn-toggle-mic').innerHTML = '<i class="ti ti-microphone" aria-hidden="true"></i> Start listening';
+  getEl('btn-toggle-mic').innerHTML = '<i class="ti ti-microphone"></i> Start listening';
   getEl('btn-toggle-mic').classList.remove('danger');
 
-  // Only update the status label if the socket is still open (we may be called from onclose).
-  if (serverWebSocket?.readyState === WebSocket.OPEN) {
+  if (serverWebSocket?.readyState === WebSocket.OPEN)
     updateStatusIndicator('ready', 'Mic stopped — WebSocket still open');
-  }
+
   appendDebugLog('Microphone stopped');
 }
 
 /* ─── WebSocket message handler ───────────────────────────────────────────── */
 function handleIncomingServerMessage(event) {
-  let serverMessage;
-  try {
-    serverMessage = JSON.parse(event.data);
-  } catch {
-    appendDebugLog('Non-JSON message received:', event.data);
-    return;
-  }
+  let msg;
+  try { msg = JSON.parse(event.data); }
+  catch { appendDebugLog('Non-JSON message:', event.data); return; }
 
-  appendDebugLog(
-    '←',
-    serverMessage.type,
-    serverMessage.text ? serverMessage.text.slice(0, 60) + '…' : '',
-  );
+  appendDebugLog('←', msg.type, msg.text ? msg.text.slice(0, 60) + '…' : '');
 
-  if (serverMessage.type === 'chunk') {
-    appendResponseTextToConversation(serverMessage.text);
-    if (serverMessage.audio) enqueueAudioChunkForPlayback(serverMessage.audio, serverMessage.text);
-  }
+  switch (msg.type) {
 
-  if (serverMessage.type === 'done') {
-    finalizeAssistantResponseTurn(serverMessage.full_text);
-    activeAssistantBubble = null;
+    // Server is about to start sending TTS audio — mute the mic immediately
+    // so speaker output doesn't feed back into the VAD.
+    case 'tts_start':
+      isMicMutedForTtsPlayback = true;
+      updateStatusIndicator('muted', 'Speaking — mic muted');
+      appendDebugLog('Mic muted for TTS playback');
+      break;
+
+    // One synthesised phrase: stream text into the bubble and queue the audio.
+    case 'chunk':
+      appendResponseTextToConversation(msg.text);
+      if (msg.audio) enqueueAudioChunkForPlayback(msg.audio);
+      break;
+
+    // All TTS audio for this turn has been sent — un-mute once the queue drains.
+    // We wait for the queue to empty rather than un-muting immediately so the mic
+    // doesn't open while the last audio chunk is still playing.
+    case 'tts_end':
+      appendDebugLog('tts_end received — will un-mute after queue drains');
+      waitForPlaybackThenUnmuteMic();
+      break;
+
+    // Turn fully complete (text + audio all sent).
+    case 'done':
+      finalizeAssistantResponseTurn();
+      activeAssistantBubble = null;
+      break;
   }
 }
 
@@ -509,13 +475,13 @@ function appendResponseTextToConversation(textChunk) {
     speakerLabel.className = 'turn-label';
     speakerLabel.textContent = 'Assistant';
 
-    const responseBubble = document.createElement('div');
-    responseBubble.className = 'bubble assistant streaming';
-    responseBubble.dataset.text = '';
+    const bubble = document.createElement('div');
+    bubble.className     = 'bubble assistant streaming';
+    bubble.dataset.text  = '';
 
-    turnWrapper.append(speakerLabel, responseBubble);
+    turnWrapper.append(speakerLabel, bubble);
     getEl('conversation-container').append(turnWrapper);
-    activeAssistantBubble = responseBubble;
+    activeAssistantBubble = bubble;
   }
 
   activeAssistantBubble.dataset.text += textChunk;
@@ -523,43 +489,54 @@ function appendResponseTextToConversation(textChunk) {
   activeAssistantBubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-function finalizeAssistantResponseTurn(_fullText) {
+function finalizeAssistantResponseTurn() {
   if (!activeAssistantBubble) return;
   activeAssistantBubble.classList.remove('streaming');
-  updateStatusIndicator('ready', 'Done — listening for next phrase');
 }
 
-/* ─── Audio playback queue (sequential) ───────────────────────────────────── */
-function enqueueAudioChunkForPlayback(base64WavData, _associatedText) {
-  const binaryString = atob(base64WavData);
-  const byteArray    = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) byteArray[i] = binaryString.charCodeAt(i);
-  const audioBlob = new Blob([byteArray], { type: 'audio/wav' });
-  audioPlaybackQueue.push({ blob: audioBlob });
+/* ─── Audio playback queue ─────────────────────────────────────────────────── */
+function enqueueAudioChunkForPlayback(base64WavData) {
+  const bin  = atob(base64WavData);
+  const buf  = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  audioPlaybackQueue.push(new Blob([buf], { type: 'audio/wav' }));
   if (!isPlayingAudio) playNextQueuedAudioChunk();
 }
 
 async function playNextQueuedAudioChunk() {
-  if (!audioPlaybackQueue.length) { isPlayingAudio = false; return; }
-
-  isPlayingAudio = true;
-  const { blob }  = audioPlaybackQueue.shift();
-  const objectUrl = URL.createObjectURL(blob);
-  const audioEl   = new Audio(objectUrl);
-
-  audioEl.onended = () => { URL.revokeObjectURL(objectUrl); playNextQueuedAudioChunk(); };
-  audioEl.onerror = e  => {
-    appendDebugLog('Audio playback error:', e);
-    URL.revokeObjectURL(objectUrl);
-    playNextQueuedAudioChunk();
-  };
-
-  try {
-    await audioEl.play();
-  } catch (err) {
-    appendDebugLog('Play failed:', err.message);
-    playNextQueuedAudioChunk();
+  if (!audioPlaybackQueue.length) {
+    isPlayingAudio = false;
+    return;
   }
+
+  isPlayingAudio    = true;
+  const blob        = audioPlaybackQueue.shift();
+  const objectUrl   = URL.createObjectURL(blob);
+  const audioEl     = new Audio(objectUrl);
+
+  const onFinished = () => { URL.revokeObjectURL(objectUrl); playNextQueuedAudioChunk(); };
+  audioEl.onended = onFinished;
+  audioEl.onerror = e => { appendDebugLog('Audio playback error:', e); onFinished(); };
+
+  try { await audioEl.play(); }
+  catch (err) { appendDebugLog('Play failed:', err.message); onFinished(); }
+}
+
+/**
+ * Poll until the audio queue is empty and no chunk is playing, then un-mute.
+ * Uses a short interval rather than a Promise chain so it handles the case
+ * where tts_end arrives before the last chunk finishes playing.
+ */
+function waitForPlaybackThenUnmuteMic() {
+  const checkInterval = setInterval(() => {
+    if (!isPlayingAudio && audioPlaybackQueue.length === 0) {
+      clearInterval(checkInterval);
+      isMicMutedForTtsPlayback = false;
+      if (isMicrophoneActive)
+        updateStatusIndicator('busy', 'Listening — speak now');
+      appendDebugLog('Mic un-muted — ready for next turn');
+    }
+  }, 100);
 }
 
 /* ─── Disconnect ───────────────────────────────────────────────────────────── */
@@ -573,8 +550,9 @@ function resetInterfaceToIdle() {
   getEl('btn-connect').disabled    = false;
   getEl('btn-toggle-mic').disabled = true;
   getEl('btn-disconnect').disabled = true;
-  isMicrophoneActive    = false;
-  activeAssistantBubble = null;
+  isMicrophoneActive       = false;
+  isMicMutedForTtsPlayback = false;
+  activeAssistantBubble    = null;
 }
 </script>
 
