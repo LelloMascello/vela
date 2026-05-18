@@ -6,7 +6,7 @@
 
 Vela is a system designed for real-time audio processing, featuring user authentication, a WebSocket interface for audio streaming, and an integrated voice pipeline. The system utilizes a FastAPI backend for handling real-time connections, integrating a Silero VAD for speech detection, a local LLM (Gemma 4), and a Text-to-Speech service to create a complete voice interaction pipeline.
 
-The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation (guided by a system prompt to ensure voice-friendly, concise responses), the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client.
+The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client. This process is managed by a sophisticated streaming mechanism that handles LLM token generation and real-time audio synthesis forwarding.
 
 ## Components
 
@@ -14,8 +14,16 @@ The voice pipeline handles the flow: client audio (PCM) is processed by a Silero
 
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
 *   **`/ready` (GET):** Launches necessary backend services (LLM server and TTS server) and reports the current operational status, IP, and port.
-*   **`/ws` (WebSocket):** Implements the full voice pipeline: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client.
+*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client.
+*   **Audio Utilities:** Provides core functions for VAD iteration, PCM encoding to WAV format, and TTS audio forwarding.
 *   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
+
+### Inference Engine (`engine/inference.py`)
+
+This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
+*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) and TTS subprocesses.
+*   **LLM Streaming:** Implements the logic to stream responses from the LLM. It processes incoming audio, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
+*   **System Prompt:** Defines the behavior of the LLM to ensure voice-friendly, concise responses.
 
 ### Text-to-Speech Engine (`engine/text_to_speech.py`)
 
@@ -28,10 +36,6 @@ This module handles user registration and login. It implements secure credential
 ### Router and WebSocket Server (`orchestrator/router.py`)
 
 The router acts as the main entry point for the application. It exposes HTTP endpoints (`/login`, `/signup`) for user management and a WebSocket endpoint (`/ws`) for real-time audio data handling, managing the complex voice pipeline flow.
-
-### Wake Word Detector (`orchestrator/wake_word_detector.py`)
-
-This service utilizes the `pvporcupine` library for real-time wake word detection. (Note: This functionality is now integrated into the main voice pipeline via Silero VAD for speech boundary detection.)
 
 ## Setup and Usage
 
@@ -46,5 +50,3 @@ The application is served via FastAPI, mounting static files from the `/public` 
         *   **Login:** POST to `/login` (requires username and password).
         *   **Authentication Check:** The `/auth` endpoint uses the `login` function to validate credentials and returns a WebSocket URL and the authenticated username upon success.
 *   **Testing Interface:** A dedicated testing interface (`orchestrator/test_ui.html`) is available to test wake word detection functionality.
-
----
