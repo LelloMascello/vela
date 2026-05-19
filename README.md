@@ -6,7 +6,7 @@
 
 Vela is a system designed for real-time audio processing, featuring user authentication, a WebSocket interface for audio streaming, and an integrated voice pipeline. The system utilizes a FastAPI backend for handling real-time connections, integrating a Silero VAD for speech detection, a local LLM (Gemma 4), and a Text-to-Speech service to create a complete voice interaction pipeline.
 
-The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client. This process is managed by a sophisticated streaming mechanism that handles LLM token generation and real-time audio synthesis forwarding.
+The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client. This process is managed by a sophisticated streaming mechanism that handles LLM token generation, real-time audio synthesis forwarding, and implements a silence timeout mechanism to automatically close connections if no speech is detected for too long.
 
 ## Components
 
@@ -14,7 +14,7 @@ The voice pipeline handles the flow: client audio (PCM) is processed by a Silero
 
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
 *   **`/ready` (GET):** Launches necessary backend services (LLM server and TTS server) and reports the current operational status, IP, and port.
-*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client.
+*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, checks for silence timeouts, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client.
 *   **Audio Utilities:** Provides core functions for VAD iteration, PCM encoding to WAV format, and TTS audio forwarding.
 *   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
 
@@ -49,4 +49,7 @@ The application is served via FastAPI, mounting static files from the `/public` 
         *   **Sign Up:** POST to `/signup` (requires username and password).
         *   **Login:** POST to `/login` (requires username and password).
         *   **Authentication Check:** The `/auth` endpoint uses the `login` function to validate credentials and returns a WebSocket URL and the authenticated username upon success.
-*   **Testing Interface:** A dedicated testing interface (`orchestrator/test_ui.html`) is available to test wake word detection functionality.
+
+## Testing Interface
+
+A dedicated testing interface (`orchestrator/test_ui.html`) is no longer available.
