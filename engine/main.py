@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 
 import httpx
 import numpy as np
@@ -44,6 +45,10 @@ app.add_middleware(
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = 8002
 
+# How many seconds of silence (no VAD speech detected) before the connection
+# is closed and the client is told to reconnect to the router WebSocket.
+SILENCE_TIMEOUT_S = 10.0
+
 active_connections: set[WebSocket] = set()
 
 
@@ -86,6 +91,7 @@ async def voice_pipeline(websocket: WebSocket):
       {"type": "chunk",  "text": str, "audio": b64|null}
       {"type": "tts_end"}
       {"type": "done",   "full_text": str}
+      {"type": "silence_timeout"}   ← new: client must reconnect to router /ws
     """
     await websocket.accept()
     active_connections.add(websocket)
@@ -95,6 +101,14 @@ async def voice_pipeline(websocket: WebSocket):
     speech_buffer:  list[float] = []
     chunks_received = 0
     turns_handled   = 0
+
+    # ── Silence-timeout state ─────────────────────────────────────────────────
+    # silence_start is set on connection and reset after every completed turn.
+    # It is cleared (set to None) while the user is actively speaking so that
+    # a long VAD segment never races against the timer.
+    silence_start: float | None = time.monotonic()
+    in_speech = False
+    # ─────────────────────────────────────────────────────────────────────────
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as http_client:
@@ -116,12 +130,36 @@ async def voice_pipeline(websocket: WebSocket):
                 # 2. Run VAD ───────────────────────────────────────────────────
                 vad_event = vad(torch.from_numpy(pcm_f32), return_seconds=False)
 
+                # 3. Silence-timeout check ────────────────────────────────────
+                if vad_event and "start" in vad_event:
+                    # Speech has started — user is talking, pause the timer.
+                    in_speech = True
+                    silence_start = None
+                    log.debug("VAD start — silence timer paused")
+
+                if not in_speech and silence_start is not None:
+                    elapsed = time.monotonic() - silence_start
+                    if elapsed >= SILENCE_TIMEOUT_S:
+                        log.info(
+                            "Silence timeout after %.1f s — closing and redirecting to router",
+                            elapsed,
+                        )
+                        await websocket.send_json({"type": "silence_timeout"})
+                        await websocket.close(code=1000, reason="Silence timeout")
+                        return
+                # ─────────────────────────────────────────────────────────────
+
                 if vad_event is None or "end" not in vad_event:
                     continue   # speech still in progress (or silence) — keep buffering
 
-                # 3. Speech end detected ───────────────────────────────────────
+                # 4. Speech end detected ───────────────────────────────────────
+                in_speech = False   # user stopped talking
+                # Don't restart the silence timer yet — wait until after the
+                # full LLM + TTS response has been sent to the client.
+
                 if not speech_buffer:
                     log.warning("VAD 'end' on empty buffer — skipping (chunk #%d)", chunks_received)
+                    silence_start = time.monotonic()   # resume timer
                     continue
 
                 pcm_turn = np.array(speech_buffer, dtype=np.float32)
@@ -134,23 +172,31 @@ async def voice_pipeline(websocket: WebSocket):
 
                 # Drop blips shorter than the minimum — almost certainly noise.
                 if duration_s < MIN_SPEECH_DURATION_S:
-                    log.info("Turn discarded — too short (%.2f s < %.2f s)", duration_s, MIN_SPEECH_DURATION_S)
+                    log.info(
+                        "Turn discarded — too short (%.2f s < %.2f s)",
+                        duration_s, MIN_SPEECH_DURATION_S,
+                    )
+                    silence_start = time.monotonic()   # resume timer after noise blip
                     continue
 
                 turns_handled += 1
 
-                # 4. Encode speech as WAV → base64 ────────────────────────────
+                # 5. Encode speech as WAV → base64 ────────────────────────────
                 wav_bytes = encode_pcm_as_wav(pcm_turn, MIC_SAMPLE_RATE)
                 wav_b64   = __import__("base64").b64encode(wav_bytes).decode()
                 log.debug("WAV encoded | bytes=%d | b64_chars=%d", len(wav_bytes), len(wav_b64))
 
-                # 5. Stream LLM response → TTS → client ───────────────────────
+                # 6. Stream LLM response → TTS → client ───────────────────────
                 full_text = await stream_llm_response(
                     websocket, http_client, wav_b64, turns_handled
                 )
 
                 await websocket.send_json({"type": "done", "full_text": full_text})
                 log.info("Turn #%d complete", turns_handled)
+
+                # 7. Response delivered — restart the silence timer ────────────
+                silence_start = time.monotonic()
+                log.debug("Silence timer restarted after turn #%d", turns_handled)
 
     except WebSocketDisconnect:
         active_connections.discard(websocket)
