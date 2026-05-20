@@ -59,7 +59,7 @@ async def launch_backend_services() -> None:
         log.info("Starting llama.cpp …")
         llama_server_process = await asyncio.create_subprocess_shell(
             "/home/leo/llama.cpp/build/bin/llama-server "
-            "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-Q4_K_M.gguf "
+            "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-UD-Q4_K_XL.gguf "
             "--mmproj /home/leo/llama.cpp/mymodels/mmproj-F16-4.gguf "
             "--host 127.0.0.1 --port 8080 -ngl 99 --reasoning off",
             stdout=asyncio.subprocess.PIPE,

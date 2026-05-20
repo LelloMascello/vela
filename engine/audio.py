@@ -1,16 +1,3 @@
-"""
-audio.py — VAD, PCM utilities, noise reduction, and TTS forwarding.
-
-Exports
--------
-MIC_SAMPLE_RATE, PCM_CHUNK_SAMPLES, PCM_CHUNK_BYTES_EXPECTED
-silero_vad_model
-make_vad_iterator()
-denoise_pcm()
-encode_pcm_as_wav()
-synthesize_and_forward_audio()
-"""
-
 import base64
 import io
 import logging

@@ -1,24 +1,3 @@
-"""
-wake_word_detector.py — OpenWakeWord HTTP service with noise robustness.
-
-Improvements over baseline
---------------------------
-• Energy gate        — silent frames are rejected before the model runs,
-                       cutting CPU usage and preventing noise-triggered hits.
-• Per-frame denoising — each frame is noise-reduced using a profile captured
-                        from the first ~1.6 s of microphone audio (assumed silence),
-                        making the detector work in louder environments.
-• Rolling score smoothing — a sliding window mean over the last SMOOTH_WINDOW
-                            frames must *also* exceed SMOOTH_THRESHOLD, so a
-                            single noisy frame can't fire the wake word.
-
-Tuning cheat-sheet
-------------------
-Louder room         → raise ENERGY_GATE_RMS and SMOOTH_THRESHOLD
-Too many false hits → raise THRESHOLD and/or SMOOTH_WINDOW
-Missing detections  → lower THRESHOLD or SMOOTH_THRESHOLD
-"""
-
 import threading
 from collections import deque
 from contextlib import asynccontextmanager
