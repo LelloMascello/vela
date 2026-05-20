@@ -1,79 +1,170 @@
-from contextlib import asynccontextmanager
-import threading
+"""
+wake_word_detector.py — OpenWakeWord HTTP service with noise robustness.
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+Improvements over baseline
+--------------------------
+• Energy gate        — silent frames are rejected before the model runs,
+                       cutting CPU usage and preventing noise-triggered hits.
+• Per-frame denoising — each frame is noise-reduced using a profile captured
+                        from the first ~1.6 s of microphone audio (assumed silence),
+                        making the detector work in louder environments.
+• Rolling score smoothing — a sliding window mean over the last SMOOTH_WINDOW
+                            frames must *also* exceed SMOOTH_THRESHOLD, so a
+                            single noisy frame can't fire the wake word.
+
+Tuning cheat-sheet
+------------------
+Louder room         → raise ENERGY_GATE_RMS and SMOOTH_THRESHOLD
+Too many false hits → raise THRESHOLD and/or SMOOTH_WINDOW
+Missing detections  → lower THRESHOLD or SMOOTH_THRESHOLD
+"""
+
+import threading
+from collections import deque
+from contextlib import asynccontextmanager
+
+import noisereduce as nr
 import numpy as np
 import openwakeword
+from fastapi import FastAPI, HTTPException
 from openwakeword.model import Model
+from pydantic import BaseModel
 
-SAMPLE_RATE = 16000   # openwakeword expects 16 kHz
-FRAME_LENGTH = 1280   # 80 ms at 16 kHz — recommended by openwakeword
+SAMPLE_RATE  = 16_000
+FRAME_LENGTH = 1280      # 80 ms @ 16 kHz — recommended by openwakeword
 
-# Pick one of the bundled models: hey_jarvis, hey_mycroft, alexa, timer, weather
 WAKE_WORD = "alexa_v0.1"
 
-oww_model = None
+# Detection thresholds
+THRESHOLD        = 0.55  # per-frame score must exceed this
+SMOOTH_WINDOW    = 5     # number of recent frames to average (~400 ms)
+SMOOTH_THRESHOLD = 0.45  # rolling mean must also exceed this
+
+# Energy gate: frames with RMS below this are skipped entirely.
+# Raise in louder environments (e.g. 0.015–0.025).
+ENERGY_GATE_RMS = 0.008
+
+# Noise profile: accumulate the first N frames (assumes mic opens on silence).
+NOISE_PROFILE_FRAMES = 20  # ~1.6 seconds
+
+# ── Module-level state ────────────────────────────────────────────────────────
+
+oww_model: Model | None = None
 oww_lock = threading.Lock()
 
+_score_history: deque[float] = deque(maxlen=SMOOTH_WINDOW)
+_noise_buf:     list[np.ndarray] = []
+_noise_profile: np.ndarray | None = None
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global oww_model
-    # Find the .onnx path for the chosen model from the bundled pretrained models.
-    all_paths = openwakeword.get_pretrained_model_paths()
+    all_paths  = openwakeword.get_pretrained_model_paths()
     model_path = next((p for p in all_paths if WAKE_WORD in p), None)
     if model_path is None:
-        raise RuntimeError(f"Model '{WAKE_WORD}' not found. Available: {all_paths}")
+        raise RuntimeError(
+            f"Wake-word model '{WAKE_WORD}' not found.\n"
+            f"Available models: {all_paths}"
+        )
     oww_model = Model(wakeword_model_paths=[model_path])
     yield
-    # No explicit teardown needed — GC handles it.
+    # No explicit teardown required — GC handles it.
 
 
 app = FastAPI(lifespan=lifespan)
 
+
+# ── Schema ────────────────────────────────────────────────────────────────────
 
 class AudioRequest(BaseModel):
     # Raw PCM as floats in [-1.0, 1.0]; must contain exactly FRAME_LENGTH samples.
     audio: list[float]
 
 
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.get("/config")
 async def config():
     """Expose runtime parameters so clients can self-configure."""
     return {
-        "frame_length": FRAME_LENGTH,
-        "sample_rate": SAMPLE_RATE,
+        "frame_length":     FRAME_LENGTH,
+        "sample_rate":      SAMPLE_RATE,
+        "threshold":        THRESHOLD,
+        "smooth_window":    SMOOTH_WINDOW,
+        "smooth_threshold": SMOOTH_THRESHOLD,
     }
 
 
 @app.post("/detect")
 async def detect(req: AudioRequest):
+    global _noise_profile, _noise_buf
+
     if len(req.audio) != FRAME_LENGTH:
         raise HTTPException(
             status_code=400,
-            detail=f"Expected {FRAME_LENGTH} samples, got {len(req.audio)}"
+            detail=f"Expected {FRAME_LENGTH} samples, got {len(req.audio)}",
         )
 
-    # Convert float [-1, 1] → int16, which openwakeword expects.
-    pcm_int16 = (np.array(req.audio, dtype=np.float32) * 32767).astype(np.int16)
+    pcm_f32 = np.array(req.audio, dtype=np.float32)
 
-    # Model.predict() is not thread-safe; serialise access.
+    # 1. Build noise profile from the opening silence of the session
+    if _noise_profile is None:
+        _noise_buf.append(pcm_f32.copy())
+        if len(_noise_buf) >= NOISE_PROFILE_FRAMES:
+            _noise_profile = np.concatenate(_noise_buf)
+            _noise_buf.clear()
+
+    # 2. Energy gate — skip detection on near-silent frames
+    rms = float(np.sqrt(np.mean(pcm_f32 ** 2)))
+    if rms < ENERGY_GATE_RMS:
+        _score_history.append(0.0)
+        return {
+            "wake_word":     False,
+            "scores":        {},
+            "best_model":    None,
+            "best_score":    0.0,
+            "smoothed_score": 0.0,
+            "reason":        "energy_gate",
+        }
+
+    # 3. Noise-reduce the frame before feeding the model
+    if _noise_profile is not None and len(_noise_profile) > 0:
+        pcm_f32 = nr.reduce_noise(
+            y=pcm_f32,
+            sr=SAMPLE_RATE,
+            y_noise=_noise_profile,
+            stationary=True,
+            prop_decrease=0.80,
+            # Smaller FFT than audio.py — the frame is only 1280 samples
+            n_fft=256,
+            n_jobs=1,
+        )
+
+    # 4. Convert float → int16 (openwakeword expects int16)
+    pcm_int16 = (pcm_f32 * 32_767).clip(-32_768, 32_767).astype(np.int16)
+
+    # 5. Run the wake-word model (not thread-safe — serialise access)
     with oww_lock:
         prediction = oww_model.predict(pcm_int16)
 
-    # prediction is a dict of {model_name: score}, score in [0.0, 1.0].
-    scores = {k: float(v) for k, v in prediction.items()}
+    scores     = {k: float(v) for k, v in prediction.items()}
     best_model = max(scores, key=scores.get)
     best_score = scores[best_model]
 
-    # A score above 0.5 is the recommended detection threshold.
-    THRESHOLD = 0.5
-    detected = best_score >= THRESHOLD
+    # 6. Rolling mean smoothing
+    _score_history.append(best_score)
+    smoothed = float(np.mean(_score_history))
+
+    # 7. Require BOTH the raw frame AND the smoothed window to exceed thresholds
+    detected = best_score >= THRESHOLD and smoothed >= SMOOTH_THRESHOLD
 
     return {
-        "wake_word": detected,
-        "scores": scores,        # full per-model scores for debugging
-        "best_model": best_model,
-        "best_score": best_score,
+        "wake_word":      detected,
+        "scores":         scores,
+        "best_model":     best_model,
+        "best_score":     best_score,
+        "smoothed_score": smoothed,
     }
