@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">flow<span>.</span>ai</div>
+
+  <nav class="main-nav">
+    <a href="/home" class="nav-link active">Home</a>
+    <a href="/chats" class="nav-link">Chats</a>
+  </nav>
+
+  <div class="phase-bar">
+    <div class="phase-step active" id="ps-router" data-phase="router">
+      <div class="num">1</div> Wake Word
+    </div>
+    <div class="phase-arrow">›</div>
+    <div class="phase-step" id="ps-main" data-phase="main">
+      <div class="num">2</div> AI Voice
+    </div>
+  </div>
+
+  <div class="header-right">
+    <span class="username-label" id="header-username"></span>
+    <button class="logout-btn" onclick="logout()">Logout</button>
+    <div class="status-pill">
+      <div class="status-dot" id="dot"></div>
+      <span id="status-text">disconnected</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ────────────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+
+    <!-- Connection -->
+    <div class="panel-section">
+      <div class="section-label">Connection</div>
+      <div class="field">
+        <label>Router Host</label>
+        <input type="text" id="host" value="localhost:8000">
+      </div>
+      <div class="field">
+        <label>Router Frame Size (samples)</label>
+        <input type="number" id="router-frame" value="1280">
+      </div>
+      <button class="btn btn-primary" id="connect-btn" onclick="connect()">Connect &amp; Start</button>
+      <div style="margin-top:0.6rem">
+        <button class="btn btn-danger" id="disconnect-btn" onclick="disconnect()" style="display:none">Disconnect</button>
+      </div>
+    </div>
+
+    <!-- Waveform -->
+    <div class="waveform-wrap">
+      <div class="section-label" style="padding:0;margin-bottom:0.7rem">Microphone</div>
+      <canvas id="waveform"></canvas>
+    </div>
+
+    <!-- Wake Word panel (phase: router) -->
+    <div class="panel-section" id="ww-panel">
+      <div class="section-label">Wake Word Score</div>
+      <div class="score-display">
+        <div class="score-label">
+          <span id="model-name">—</span>
+          <span class="score-val" id="score-val">0.000</span>
+        </div>
+        <div class="score-bar-bg">
+          <div class="score-bar-fill" id="score-bar"></div>
+        </div>
+        <div class="threshold-line"></div>
+      </div>
+      <div class="detection-badge" id="detect-badge">
+        <span class="detection-icon">🎙</span>
+        <div class="detection-label" id="detect-label">Listening…</div>
+        <div class="detect-count" id="detect-count">0</div>
+      </div>
+    </div>
+
+    <!-- AI Session panel (phase: main) -->
+    <div class="panel-section" id="ai-panel" style="display:none">
+      <div class="section-label">Silence Timer</div>
+      <div class="silence-timer-wrap">
+        <svg class="silence-ring" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r="32" fill="none" stroke="var(--surface2)" stroke-width="5"/>
+          <circle id="timer-ring" cx="40" cy="40" r="32" fill="none"
+            stroke="var(--accent)" stroke-width="5"
+            stroke-dasharray="201.1" stroke-dashoffset="0"
+            stroke-linecap="round"
+            transform="rotate(-90 40 40)"
+            style="transition: stroke-dashoffset 0.9s linear, stroke 0.3s"/>
+        </svg>
+        <div class="silence-timer-label">
+          <div id="timer-seconds">10</div>
+          <div class="timer-sub">silence</div>
+        </div>
+      </div>
+      <div class="ai-state-badge" id="ai-state-badge">
+        <div class="ai-state-dot"></div>
+        <span id="ai-state-text">waiting for speech…</span>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="panel-section">
+      <div class="section-label">Stats</div>
+      <div class="stat-row"><span>Frames sent</span><span id="st-frames">0</span></div>
+      <div class="stat-row"><span>WW detections</span><span id="st-det">0</span></div>
+      <div class="stat-row"><span>AI turns</span><span id="st-turns">0</span></div>
+      <div class="stat-row"><span>Reconnects</span><span id="st-reconnects">0</span></div>
+      <div class="stat-row"><span>Errors</span><span id="st-err">0</span></div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT PANEL: conversation only -->
+  <div class="right-panel" id="right-panel">
+    <div id="convo-panel">
+      <div class="panel-header">
+        <span class="panel-header-label">Conversation</span>
+        <button class="clear-btn" onclick="clearConvo()">Clear</button>
+      </div>
+      <div id="convo"></div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-stat"><span>phase</span>&nbsp;<span class="fsv" id="ft-phase">idle</span></div>
+  <div class="footer-stat"><span>router ws</span>&nbsp;<span class="fsv" id="ft-router">—</span></div>
+  <div class="footer-stat"><span>main ws</span>&nbsp;<span class="fsv" id="ft-main">—</span></div>
+  <div class="footer-stat"><span>frame</span>&nbsp;<span class="fsv" id="ft-frame">—</span></div>
+  <div class="footer-stat"><span>sample rate</span>&nbsp;<span class="fsv">16 kHz</span></div>
+</footer>
+
+<script src="/public/home.js"></script>
+</body>
+</html>

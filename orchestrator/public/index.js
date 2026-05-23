@@ -28,8 +28,14 @@ async function handleLogin() {
   const password = document.getElementById('login-password').value;
   if (!username || !password) return setMessage('Fill in all fields.', 'error');
   const [ok, data] = await post('/login', username, password);
-  ok ? setMessage(`Welcome back, ${data.username}!`, 'success')
-     : setMessage(data.error, 'error');
+  if (ok) {
+    // Store credentials for the session (needed by router /auth endpoint)
+    sessionStorage.setItem('username', data.username);
+    sessionStorage.setItem('password', password);
+    window.location.href = '/home';
+  } else {
+    setMessage(data.error, 'error');
+  }
 }
 
 async function handleSignup() {
@@ -37,6 +43,6 @@ async function handleSignup() {
   const password = document.getElementById('signup-password').value;
   if (!username || !password) return setMessage('Fill in all fields.', 'error');
   const [ok, data] = await post('/signup', username, password);
-  ok ? setMessage(`Account created for ${data.username}!`, 'success')
+  ok ? setMessage(`Account created for ${data.username}! You can now log in.`, 'success')
      : setMessage(data.error, 'error');
 }

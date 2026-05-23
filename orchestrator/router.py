@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import httpx
 import numpy as np
@@ -43,13 +43,16 @@ async def authentication(
 
     host = request.headers.get("host", "localhost")
     return {
-        "ws_url": f"ws://{host}/ws",
+        "ws_url": f"ws://{host}/ws?username={result['username']}",  # fix: username già nell'URL
         "username": result["username"],
     }
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    username: str = Query(...),  # fix: username ricevuto come query param (?username=xxx)
+):
     await websocket.accept()
 
     async with httpx.AsyncClient() as client:
@@ -116,7 +119,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "ip": ip,
                                 "port": port,
                                 "message": "server ready",
+                                "username": username,  # fix: username inoltrato al client per il redirect
                             })
 
         except WebSocketDisconnect:
-            print("Client disconnected")
+            print(f"Client disconnected: {username}")

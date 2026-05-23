@@ -5,7 +5,7 @@ import time
 import httpx
 import numpy as np
 import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from audio import (
@@ -45,6 +45,8 @@ app.add_middleware(
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = 8002
 
+DATABASE_URL = "http://127.0.0.1:8005/chats/insert"  # fix: aggiunto http://
+
 # How many seconds of silence (no VAD speech detected) before the connection
 # is closed and the client is told to reconnect to the router WebSocket.
 SILENCE_TIMEOUT_S = 10.0
@@ -79,7 +81,10 @@ async def ready():
 # ── WebSocket voice pipeline ──────────────────────────────────────────────────
 
 @app.websocket("/ws")
-async def voice_pipeline(websocket: WebSocket):
+async def voice_pipeline(
+    websocket: WebSocket,
+    username: str = Query(...),  # fix: username ricevuto come query param (?username=xxx)
+):
     """
     Main voice pipeline:
       client mic (PCM) → VAD → llama.cpp (Gemma 4) → TTS → client (text + WAV)
@@ -91,16 +96,20 @@ async def voice_pipeline(websocket: WebSocket):
       {"type": "chunk",  "text": str, "audio": b64|null}
       {"type": "tts_end"}
       {"type": "done",   "full_text": str}
-      {"type": "silence_timeout"}   ← new: client must reconnect to router /ws
+      {"type": "silence_timeout"}   ← client must reconnect to router /ws
     """
     await websocket.accept()
     active_connections.add(websocket)
-    log.info("Client connected — total=%d", len(active_connections))
+    log.info("Client connected user=%s — total=%d", username, len(active_connections))
 
     vad             = make_vad_iterator()
     speech_buffer:  list[float] = []
     chunks_received = 0
     turns_handled   = 0
+
+    # Per-connection chat history — dropped automatically when this coroutine exits.
+    # User turns are stored as a text placeholder because we don't retain the raw WAV.
+    conversation_history: list[dict] = []
 
     # ── Silence-timeout state ─────────────────────────────────────────────────
     # silence_start is set on connection and reset after every completed turn.
@@ -188,8 +197,13 @@ async def voice_pipeline(websocket: WebSocket):
 
                 # 6. Stream LLM response → TTS → client ───────────────────────
                 full_text = await stream_llm_response(
-                    websocket, http_client, wav_b64, turns_handled
+                    websocket, http_client, wav_b64, turns_handled, conversation_history
                 )
+
+                # Persist this turn in the connection-scoped history.
+                conversation_history.append({"role": "user",      "content": "(voice input)"})
+                conversation_history.append({"role": "assistant", "content": full_text})
+                log.debug("History length: %d messages", len(conversation_history))
 
                 await websocket.send_json({"type": "done", "full_text": full_text})
                 log.info("Turn #%d complete", turns_handled)
@@ -200,9 +214,21 @@ async def voice_pipeline(websocket: WebSocket):
 
     except WebSocketDisconnect:
         active_connections.discard(websocket)
+        async with httpx.AsyncClient(timeout=120.0) as http_client:
+            try:
+                saved_history = await http_client.post(
+                    DATABASE_URL,
+                    json={
+                        "_id": username,              # fix: ora username è definito
+                        "chat": conversation_history,
+                    }
+                )
+                saved_history.raise_for_status()
+            except Exception as e:
+                log.error("Failed to save history: %s", e)
         log.info(
-            "Client disconnected | chunks=%d | turns=%d | remaining=%d",
-            chunks_received, turns_handled, len(active_connections),
+            "Client disconnected user=%s | chunks=%d | turns=%d | remaining=%d",
+            username, chunks_received, turns_handled, len(active_connections),
         )
         if not active_connections:
             log.info("No active clients — shutting down backend services")

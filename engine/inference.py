@@ -60,7 +60,7 @@ async def launch_backend_services() -> None:
         llama_server_process = await asyncio.create_subprocess_shell(
             "/home/leo/llama.cpp/build/bin/llama-server "
             "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-UD-Q4_K_XL.gguf "
-            "--mmproj /home/leo/llama.cpp/mymodels/mmproj-F16-4.gguf "
+            "--mmproj /home/leo/llama.cpp/mymodels/mmproj-F16.gguf "
             "--host 127.0.0.1 --port 8080 -ngl 99 --reasoning off",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -109,14 +109,19 @@ async def shutdown_backend_services() -> None:
 # ── LLM streaming ─────────────────────────────────────────────────────────────
 
 async def stream_llm_response(
-    websocket:        WebSocket,
-    http_client:      httpx.AsyncClient,
-    speech_wav_b64:   str,
-    turn_number:      int,
+    websocket:            WebSocket,
+    http_client:          httpx.AsyncClient,
+    speech_wav_b64:       str,
+    turn_number:          int,
+    conversation_history: list[dict] | None = None,
 ) -> str:
     """
     Stream a response from llama.cpp for *speech_wav_b64* and forward audio phrases
     to the client via TTS as each sentence boundary is reached.
+
+    *conversation_history* is a list of ``{"role": …, "content": …}`` dicts for
+    all previous turns in this connection.  It is **not** mutated here — the caller
+    is responsible for appending the new user/assistant pair after this call returns.
 
     Returns the complete text response.
 
@@ -125,25 +130,35 @@ async def stream_llm_response(
       {"type": "chunk", "text": str, "audio": b64|null}   — one per sentence
       {"type": "tts_end"}                                  — once, after last phrase
     """
+    history = conversation_history or []
+
+    # Build the full message list:
+    #   [system]  +  [past turns …]  +  [current user audio]
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *history,
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": speech_wav_b64, "format": "wav"},
+                }
+            ],
+        },
+    ]
+
     payload = {
-        "model": "gemma-4-e2b",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": speech_wav_b64, "format": "wav"},
-                    }
-                ],
-            },
-        ],
+        "model":      "gemma-4-e2b",
+        "messages":   messages,
         "stream":     True,
         "max_tokens": 512,
     }
 
-    log.info("→ LLM request | turn=#%d | wav_b64_chars=%d", turn_number, len(speech_wav_b64))
+    log.info(
+        "→ LLM request | turn=#%d | history_turns=%d | wav_b64_chars=%d",
+        turn_number, len(history) // 2, len(speech_wav_b64),
+    )
     t0 = time.perf_counter()
 
     pending_phrase    = ""

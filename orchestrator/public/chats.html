@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chats</title>
+  <link rel="stylesheet" href="/public/style.css">
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">flow<span>.</span>ai</div>
+
+  <nav class="main-nav">
+    <a href="/home" class="nav-link">Home</a>
+    <a href="/chats" class="nav-link active">Chats</a>
+  </nav>
+
+  <div class="header-right">
+    <span class="username-label" id="header-username"></span>
+    <button class="logout-btn" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<!-- ── Chats page ──────────────────────────────────────────────────────────── -->
+<div class="chats-page">
+
+  <div class="chats-toolbar">
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input
+        type="text"
+        id="search-input"
+        class="search-input"
+        placeholder="Search chats…"
+        oninput="onSearch()"
+        autocomplete="off"
+      >
+      <button class="search-clear" id="search-clear" onclick="clearSearch()" style="display:none">✕</button>
+    </div>
+    <div class="chats-count" id="chats-count"></div>
+  </div>
+
+  <div id="chats-list" class="chats-list">
+    <div class="chats-empty" id="chats-loading">
+      <span class="empty-icon">⏳</span>
+      <p>Loading chats…</p>
+    </div>
+  </div>
+
+</div>
+
+<script src="/public/chats.js"></script>
+</body>
+</html>
