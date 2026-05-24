@@ -15,16 +15,16 @@ log = logging.getLogger("audio")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TEXT_TO_SPEECH_URL      = "http://localhost:8003/"
-MIC_SAMPLE_RATE         = 16_000
-PCM_CHUNK_SAMPLES       = 512
-PCM_CHUNK_BYTES_EXPECTED = PCM_CHUNK_SAMPLES * 2  # 16-bit → 2 bytes/sample
+TEXT_TO_SPEECH_URL       = "http://localhost:8003/"
+MIC_SAMPLE_RATE          = 16_000
+PCM_CHUNK_SAMPLES        = 512
+PCM_CHUNK_BYTES_EXPECTED = PCM_CHUNK_SAMPLES * 2   # 16-bit → 2 bytes/sample
 
 # VAD sensitivity — raise threshold / silence duration to reduce false triggers.
-VAD_THRESHOLD             = 0.65   # default 0.50 — ignore faint / background noise
-VAD_MIN_SILENCE_MS        = 400    # default 100 ms — wait before ending a turn
-VAD_SPEECH_PAD_MS         = 60     # default 30 ms  — padding around speech edges
-MIN_SPEECH_DURATION_S     = 0.5    # discard blips shorter than this
+VAD_THRESHOLD         = 0.65   # default 0.50 — ignore faint / background noise
+VAD_MIN_SILENCE_MS    = 400    # default 100 ms — wait before ending a turn
+VAD_SPEECH_PAD_MS     = 60     # default 30 ms  — padding around speech edges
+MIN_SPEECH_DURATION_S = 0.5    # discard blips shorter than this
 
 # ── VAD model (loaded once at import time, shared across connections) ─────────
 
@@ -47,9 +47,22 @@ def make_vad_iterator() -> VADIterator:
     )
 
 
+def denoise_pcm(pcm_f32: np.ndarray, sample_rate: int) -> np.ndarray:
+    """
+    Apply spectral noise reduction to a float32 mono PCM array.
+
+    noisereduce uses the first ~0.5 s as a noise profile when no explicit
+    noise clip is provided, which works well for microphone captures where
+    the user hasn't started speaking yet at the very beginning of the buffer.
+    Returns a float32 array of the same length.
+    """
+    denoised = nr.reduce_noise(y=pcm_f32, sr=sample_rate, stationary=False)
+    return denoised.astype(np.float32)
+
+
 def encode_pcm_as_wav(pcm_f32: np.ndarray, sample_rate: int) -> bytes:
     """Encode a float32 mono PCM array as an in-memory WAV file (stdlib only)."""
-    pcm_int16  = (pcm_f32 * 32_767.0).clip(-32_768, 32_767).astype(np.int16)
+    pcm_int16 = (pcm_f32 * 32_767.0).clip(-32_768, 32_767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)

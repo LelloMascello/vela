@@ -17,38 +17,67 @@ function logout() {
 //  DATA
 // ═══════════════════════════════════════════════════════════════════════════
 
-let allChats     = [];   // raw chats from server
-let filteredChats = [];  // after fuzzy search
+let allChats      = [];   // raw session docs from server
+let filteredChats = [];   // after fuzzy search
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  DATA HELPERS
+//
+//  Each document from /chats/select looks like:
+//    { _id, username, created_at (unix ms), chat: [{role, content}, …] }
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Return the first assistant message in a session, or a fallback string.
+ */
+function sessionTitle(doc) {
+  const msgs = doc.chat || [];
+  const first = msgs.find(m => m.role === 'assistant');
+  if (first && first.content) return first.content.slice(0, 60) + (first.content.length > 60 ? '…' : '');
+  return 'Voice session';
+}
+
+/**
+ * Return the last meaningful message text for the preview line.
+ */
+function previewText(doc) {
+  const msgs = doc.chat || [];
+  if (!msgs.length) return 'No messages';
+  const last = msgs[msgs.length - 1];
+  const text = last.content || '';
+  return text.slice(0, 140) || 'No messages';
+}
+
+/**
+ * Build a single searchable string from a session document.
+ */
+function chatToSearchString(doc) {
+  const parts = [];
+  if (doc.username) parts.push(doc.username);
+  (doc.chat || []).forEach(m => { if (m.content) parts.push(m.content); });
+  return parts.join(' ');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  FUZZY SEARCH
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Score how well `pattern` matches `text`.
- * Returns a score >= 0: higher = better match, 0 = no match.
- * Uses a simple contiguous-subsequence approach that rewards
- * consecutive matching characters and start-of-word matches.
- */
 function fuzzyScore(text, pattern) {
   if (!pattern) return 1;
   text    = text.toLowerCase();
   pattern = pattern.toLowerCase();
 
-  // Exact substring is the best match
   if (text.includes(pattern)) return 1000 - text.indexOf(pattern);
 
   let score      = 0;
-  let pi         = 0;       // position in pattern
+  let pi         = 0;
   let consecutive = 0;
   let lastMatch  = -1;
 
   for (let ti = 0; ti < text.length && pi < pattern.length; ti++) {
     if (text[ti] === pattern[pi]) {
       consecutive++;
-      // Reward consecutive chars and proximity
       score += consecutive * 2 + (lastMatch === ti - 1 ? 4 : 0);
-      // Reward word-boundary matches
       if (ti === 0 || text[ti - 1] === ' ' || text[ti - 1] === '_') score += 6;
       lastMatch = ti;
       pi++;
@@ -57,25 +86,7 @@ function fuzzyScore(text, pattern) {
     }
   }
 
-  // All pattern chars must appear in order
   return pi === pattern.length ? score : 0;
-}
-
-/**
- * Build a single searchable string from a chat document.
- * Searches over title, all message texts, and the username.
- */
-function chatToSearchString(chat) {
-  const parts = [];
-  if (chat.title)    parts.push(chat.title);
-  if (chat.username) parts.push(chat.username);
-  if (Array.isArray(chat.messages)) {
-    chat.messages.forEach(m => {
-      if (m.text)    parts.push(m.text);
-      if (m.content) parts.push(m.content);
-    });
-  }
-  return parts.join(' ');
 }
 
 function fuzzyFilter(chats, query) {
@@ -92,10 +103,9 @@ function fuzzyFilter(chats, query) {
 
 function highlight(text, pattern) {
   if (!pattern) return escHtml(text);
-  const lower   = text.toLowerCase();
-  const pat     = pattern.toLowerCase();
+  const lower = text.toLowerCase();
+  const pat   = pattern.toLowerCase();
 
-  // Exact substring highlight
   const idx = lower.indexOf(pat);
   if (idx !== -1) {
     return escHtml(text.slice(0, idx))
@@ -103,7 +113,6 @@ function highlight(text, pattern) {
       + escHtml(text.slice(idx + pat.length));
   }
 
-  // Fuzzy character-level highlight
   let result = '';
   let pi = 0;
   for (let ti = 0; ti < text.length; ti++) {
@@ -128,18 +137,16 @@ function escHtml(s) {
 //  RENDER
 // ═══════════════════════════════════════════════════════════════════════════
 
-function formatDate(raw) {
+function formatDate(doc) {
+  // created_at is stored as unix ms by main.py
+  const raw = doc.created_at;
   if (!raw) return '';
-  const d = new Date(raw.$date ?? raw);
+  // MongoDB BSON date serialised by bson json_util comes as {"$date": ...}
+  const ms  = (typeof raw === 'object' && raw.$date) ? raw.$date : raw;
+  const d   = new Date(ms);
   if (isNaN(d)) return '';
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-       + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
-
-function previewText(chat) {
-  if (!Array.isArray(chat.messages) || !chat.messages.length) return 'No messages';
-  const last = chat.messages[chat.messages.length - 1];
-  return (last.text || last.content || '').slice(0, 140) || 'No messages';
+    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 function renderChats(results, query) {
@@ -149,16 +156,18 @@ function renderChats(results, query) {
     list.innerHTML = `
       <div class="chats-empty">
         <span class="empty-icon">🔍</span>
-        <p>${query ? `No chats match "<strong>${escHtml(query)}</strong>"` : 'No chats yet.'}</p>
+        <p>${query ? `No sessions match "<strong>${escHtml(query)}</strong>"` : 'No sessions yet.'}</p>
       </div>`;
     return;
   }
 
-  list.innerHTML = results.map(({ chat }) => {
-    const title   = chat.title || 'Untitled chat';
-    const preview = previewText(chat);
-    const date    = formatDate(chat.created_at);
-    const count   = Array.isArray(chat.messages) ? chat.messages.length : 0;
+  list.innerHTML = results.map(({ chat: doc }) => {
+    const title   = sessionTitle(doc);
+    const preview = previewText(doc);
+    const date    = formatDate(doc);
+    const msgs    = doc.chat || [];
+    // Count only assistant turns as "AI replies"
+    const aiCount = msgs.filter(m => m.role === 'assistant').length;
 
     return `
       <div class="chat-card">
@@ -168,13 +177,13 @@ function renderChats(results, query) {
         </div>
         <div class="chat-preview">${highlight(preview, query)}</div>
         <div class="chat-meta">
-          <span class="chat-turns">${count} message${count !== 1 ? 's' : ''}</span>
+          <span class="chat-turns">${aiCount} AI response${aiCount !== 1 ? 's' : ''}</span>
         </div>
       </div>`;
   }).join('');
 
   document.getElementById('chats-count').textContent =
-    results.length + ' of ' + allChats.length + ' chat' + (allChats.length !== 1 ? 's' : '');
+    results.length + ' of ' + allChats.length + ' session' + (allChats.length !== 1 ? 's' : '');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -205,13 +214,13 @@ async function loadChats() {
     allChats = await res.json();
     filteredChats = allChats;
     document.getElementById('chats-count').textContent =
-      allChats.length + ' chat' + (allChats.length !== 1 ? 's' : '');
-    renderChats(filteredChats, '');
+      allChats.length + ' session' + (allChats.length !== 1 ? 's' : '');
+    renderChats(filteredChats.map(c => ({ chat: c, score: 1 })), '');
   } catch (e) {
     document.getElementById('chats-list').innerHTML = `
       <div class="chats-empty">
         <span class="empty-icon">⚠️</span>
-        <p>Failed to load chats: ${escHtml(e.message)}</p>
+        <p>Failed to load sessions: ${escHtml(e.message)}</p>
       </div>`;
   }
 }

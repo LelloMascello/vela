@@ -4,10 +4,12 @@ from fastapi.staticfiles import StaticFiles
 from auth import signup, login
 import pymongo
 from bson import json_util
-import json
 
 mydb = pymongo.MongoClient("mongodb://localhost:27017/")["ai_assistant"]
 mycol = mydb["ai_chats"]
+
+# Index on username so selects are fast even with many sessions.
+mycol.create_index("username")
 
 app = FastAPI()
 app.mount("/public", StaticFiles(directory="public"), name="public")
@@ -55,25 +57,43 @@ async def do_login(username: str = Form(...), password: str = Form(...)):
 
 @app.post("/chats/insert")
 async def insert_chats(history: dict):
+    """
+    Save a completed voice session as a new chat document.
+
+    Expected body:
+      {
+        "username":   str,
+        "created_at": int,      <- unix ms timestamp
+        "chat":       list[{role, content}]
+      }
+
+    Each call inserts a NEW document so all sessions are preserved.
+    There is no duplicate-key risk because MongoDB assigns its own _id.
+    """
+    username = history.get("username")
+    if not username:
+        raise HTTPException(status_code=400, detail="Missing 'username' field in body")
+    if not history.get("chat"):
+        # Nothing to save — skip silently.
+        return {"status": "skipped", "reason": "empty chat"}
+
     try:
         result = mycol.insert_one(history)
-        return {
-            "status": "success",
-            "inserted_id": str(result.inserted_id)
-        }
+        return {"status": "success", "inserted_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @app.get("/chats/select")
 async def select_chats(username: str):
+    """Return all saved sessions for *username*, newest first."""
     try:
-        # Project out the internal _id to keep the response clean
-        chats = list(mycol.find({"_id": username}))
-        # Use bson json_util to handle any ObjectId / datetime fields safely
+        chats = list(
+            mycol.find({"username": username}, sort=[("created_at", pymongo.DESCENDING)])
+        )
         return Response(
             content=json_util.dumps(chats),
-            media_type="application/json"
+            media_type="application/json",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

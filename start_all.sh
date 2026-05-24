@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# 1. Start MongoDB service (will prompt for sudo password if required)
-echo "[+] Starting MongoDB service..."
-sudo systemctl start mongodb
-
-# Array to keep track of background process IDs (PIDs)
-PIDS=()
-
 # Function to cleanly stop all services when you press Ctrl+C
 cleanup() {
     echo -e "\n[!] Stopping all FastAPI services..."

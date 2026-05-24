@@ -12,6 +12,7 @@ from audio import (
     MIC_SAMPLE_RATE,
     MIN_SPEECH_DURATION_S,
     PCM_CHUNK_BYTES_EXPECTED,
+    denoise_pcm,
     encode_pcm_as_wav,
     make_vad_iterator,
 )
@@ -45,7 +46,7 @@ app.add_middleware(
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = 8002
 
-DATABASE_URL = "http://127.0.0.1:8005/chats/insert"  # fix: aggiunto http://
+DATABASE_URL = "http://127.0.0.1:8005/chats/insert"
 
 # How many seconds of silence (no VAD speech detected) before the connection
 # is closed and the client is told to reconnect to the router WebSocket.
@@ -83,11 +84,11 @@ async def ready():
 @app.websocket("/ws")
 async def voice_pipeline(
     websocket: WebSocket,
-    username: str = Query(...),  # fix: username ricevuto come query param (?username=xxx)
+    username: str = Query(...),
 ):
     """
     Main voice pipeline:
-      client mic (PCM) → VAD → llama.cpp (Gemma 4) → TTS → client (text + WAV)
+      client mic (PCM) → VAD → denoise → llama.cpp (Gemma 4) → TTS → client
 
     Input:  16-bit signed PCM, mono, 16 kHz, 512 samples/chunk (1 024 bytes).
 
@@ -102,19 +103,18 @@ async def voice_pipeline(
     active_connections.add(websocket)
     log.info("Client connected user=%s — total=%d", username, len(active_connections))
 
-    vad             = make_vad_iterator()
-    speech_buffer:  list[float] = []
+    # Record when this session started (unix ms) for the DB record.
+    session_started_ms = int(time.time() * 1000)
+
+    vad            = make_vad_iterator()
+    speech_buffer: list[float] = []
     chunks_received = 0
     turns_handled   = 0
 
     # Per-connection chat history — dropped automatically when this coroutine exits.
-    # User turns are stored as a text placeholder because we don't retain the raw WAV.
     conversation_history: list[dict] = []
 
     # ── Silence-timeout state ─────────────────────────────────────────────────
-    # silence_start is set on connection and reset after every completed turn.
-    # It is cleared (set to None) while the user is actively speaking so that
-    # a long VAD segment never races against the timer.
     silence_start: float | None = time.monotonic()
     in_speech = False
     # ─────────────────────────────────────────────────────────────────────────
@@ -141,7 +141,6 @@ async def voice_pipeline(
 
                 # 3. Silence-timeout check ────────────────────────────────────
                 if vad_event and "start" in vad_event:
-                    # Speech has started — user is talking, pause the timer.
                     in_speech = True
                     silence_start = None
                     log.debug("VAD start — silence timer paused")
@@ -159,16 +158,14 @@ async def voice_pipeline(
                 # ─────────────────────────────────────────────────────────────
 
                 if vad_event is None or "end" not in vad_event:
-                    continue   # speech still in progress (or silence) — keep buffering
+                    continue
 
                 # 4. Speech end detected ───────────────────────────────────────
-                in_speech = False   # user stopped talking
-                # Don't restart the silence timer yet — wait until after the
-                # full LLM + TTS response has been sent to the client.
+                in_speech = False
 
                 if not speech_buffer:
                     log.warning("VAD 'end' on empty buffer — skipping (chunk #%d)", chunks_received)
-                    silence_start = time.monotonic()   # resume timer
+                    silence_start = time.monotonic()
                     continue
 
                 pcm_turn = np.array(speech_buffer, dtype=np.float32)
@@ -179,19 +176,21 @@ async def voice_pipeline(
                 rms        = float(np.sqrt(np.mean(pcm_turn ** 2)))
                 log.info("VAD end | duration=%.2f s | rms=%.4f", duration_s, rms)
 
-                # Drop blips shorter than the minimum — almost certainly noise.
                 if duration_s < MIN_SPEECH_DURATION_S:
                     log.info(
                         "Turn discarded — too short (%.2f s < %.2f s)",
                         duration_s, MIN_SPEECH_DURATION_S,
                     )
-                    silence_start = time.monotonic()   # resume timer after noise blip
+                    silence_start = time.monotonic()
                     continue
 
                 turns_handled += 1
 
-                # 5. Encode speech as WAV → base64 ────────────────────────────
-                wav_bytes = encode_pcm_as_wav(pcm_turn, MIC_SAMPLE_RATE)
+                # 5. Denoise → encode speech as WAV → base64 ──────────────────
+                log.debug("Denoising PCM | samples=%d", len(pcm_turn))
+                pcm_clean = denoise_pcm(pcm_turn, MIC_SAMPLE_RATE)
+
+                wav_bytes = encode_pcm_as_wav(pcm_clean, MIC_SAMPLE_RATE)
                 wav_b64   = __import__("base64").b64encode(wav_bytes).decode()
                 log.debug("WAV encoded | bytes=%d | b64_chars=%d", len(wav_bytes), len(wav_b64))
 
@@ -200,7 +199,6 @@ async def voice_pipeline(
                     websocket, http_client, wav_b64, turns_handled, conversation_history
                 )
 
-                # Persist this turn in the connection-scoped history.
                 conversation_history.append({"role": "user",      "content": "(voice input)"})
                 conversation_history.append({"role": "assistant", "content": full_text})
                 log.debug("History length: %d messages", len(conversation_history))
@@ -214,18 +212,23 @@ async def voice_pipeline(
 
     except WebSocketDisconnect:
         active_connections.discard(websocket)
-        async with httpx.AsyncClient(timeout=120.0) as http_client:
-            try:
-                saved_history = await http_client.post(
-                    DATABASE_URL,
-                    json={
-                        "_id": username,              # fix: ora username è definito
-                        "chat": conversation_history,
-                    }
-                )
-                saved_history.raise_for_status()
-            except Exception as e:
-                log.error("Failed to save history: %s", e)
+        # Only persist if there was at least one exchange.
+        if conversation_history:
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                try:
+                    resp = await http_client.post(
+                        DATABASE_URL,
+                        json={
+                            "username":   username,
+                            "created_at": session_started_ms,
+                            "chat":       conversation_history,
+                        }
+                    )
+                    resp.raise_for_status()
+                    log.info("Session saved for user=%s (%d messages)", username, len(conversation_history))
+                except Exception as e:
+                    log.error("Failed to save history for user=%s: %s", username, e)
+
         log.info(
             "Client disconnected user=%s | chunks=%d | turns=%d | remaining=%d",
             username, chunks_received, turns_handled, len(active_connections),

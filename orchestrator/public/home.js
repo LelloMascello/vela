@@ -62,18 +62,17 @@ let   waveActive   = false;
 // ═══════════════════════════════════════════════════════════════════════════
 
 function setStatus(cls, text) {
-  document.getElementById('dot').className         = 'status-dot ' + cls;
+  document.getElementById('dot').className          = 'status-dot ' + cls;
   document.getElementById('status-text').textContent = text;
 }
 
 function setPhaseSteps(active) {
-  // active: 'router' | 'main'
   const order = ['router', 'main'];
   const ai    = order.indexOf(active);
   order.forEach((p, i) => {
     const el = document.getElementById('ps-' + p);
     if (!el) return;
-    if (i < ai)       el.className = 'phase-step done';
+    if (i < ai)        el.className = 'phase-step done';
     else if (i === ai) el.className = 'phase-step active';
     else               el.className = 'phase-step';
   });
@@ -119,10 +118,10 @@ function setAiState(state) {
   const badge = document.getElementById('ai-state-badge');
   const text  = document.getElementById('ai-state-text');
   badge.className = 'ai-state-badge';
-  if (state === 'listening')      { badge.classList.add('listening'); text.textContent = 'listening…'; }
-  else if (state === 'speaking')  { badge.classList.add('speaking');  text.textContent = 'AI speaking…'; }
-  else if (state === 'timeout')   { text.textContent = 'silence timeout — reconnecting…'; }
-  else                            { text.textContent = 'waiting for speech…'; }
+  if (state === 'listening')     { badge.classList.add('listening'); text.textContent = 'listening…'; }
+  else if (state === 'speaking') { badge.classList.add('speaking');  text.textContent = 'AI speaking…'; }
+  else if (state === 'timeout')  { text.textContent = 'silence timeout — reconnecting…'; }
+  else                           { text.textContent = 'waiting for speech…'; }
 }
 
 // ── Silence countdown ring ────────────────────────────────────────────────
@@ -157,9 +156,9 @@ function updateTimerRing() {
   const offset = TIMER_CIRC * (1 - frac);
   const ring   = document.getElementById('timer-ring');
   ring.style.strokeDashoffset = offset;
-  const stroke = frac > 0.5 ? 'var(--accent)'
+  const stroke = frac > 0.5  ? 'var(--accent)'
                : frac > 0.25 ? 'var(--amber)'
-               : 'var(--red)';
+               :               'var(--red)';
   ring.style.stroke = stroke;
   document.getElementById('timer-seconds').textContent = Math.ceil(timerLeft);
 }
@@ -224,19 +223,35 @@ function enqueueAudio(b64wav) {
 
 async function drainAudioQueue() {
   if (!audioQueue.length) { audioPlaying = false; return; }
+  if (!audioCtx)          { audioPlaying = false; audioQueue.length = 0; return; }
+
   audioPlaying = true;
   const b64 = audioQueue.shift();
+
   try {
+    // Resume the AudioContext if the browser suspended it (tab focus loss,
+    // autoplay policy). decodeAudioData works while suspended but start()
+    // is a no-op until the context is running.
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+
     const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
     const buf   = await audioCtx.decodeAudioData(bytes.buffer);
-    const src   = audioCtx.createBufferSource();
-    src.buffer  = buf;
+
+    // Guard: context may have been closed while we awaited decode.
+    if (!audioCtx || audioCtx.state === 'closed') {
+      audioPlaying = false;
+      audioQueue.length = 0;
+      return;
+    }
+
+    const src  = audioCtx.createBufferSource();
+    src.buffer = buf;
     src.connect(audioCtx.destination);
     src.onended = () => drainAudioQueue();
     src.start();
   } catch (e) {
     console.error('TTS playback error:', e.message);
-    drainAudioQueue();
+    drainAudioQueue();   // skip broken chunk, play next
   }
 }
 
@@ -402,11 +417,11 @@ function connectRouterWs(url) {
     }
 
     if (data.ip !== undefined && data.port !== undefined) {
-      switchToMain(data.ip, data.port);
+      switchToMain(data.ip, data.port, data.username);
     }
   };
 
-  wsRouter.onclose = e => {
+  wsRouter.onclose = () => {
     document.getElementById('ft-router').textContent = 'closed';
   };
 
@@ -421,11 +436,12 @@ function connectRouterWs(url) {
 //  PHASE TRANSITION: router → main
 // ═══════════════════════════════════════════════════════════════════════════
 
-function switchToMain(ip, port) {
+function switchToMain(ip, port, username) {
   if (wsRouter && wsRouter.readyState === WebSocket.OPEN) wsRouter.close(1000, 'switching to main');
   wsRouter = null;
 
-  const url = `ws://${ip}:${port}/ws`;
+  const user = encodeURIComponent(username || _username);
+  const url  = `ws://${ip}:${port}/ws?username=${user}`;
   document.getElementById('ft-main').textContent = `${ip}:${port}`;
 
   wsMain = new WebSocket(url);
