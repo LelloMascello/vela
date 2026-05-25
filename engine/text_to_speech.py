@@ -11,8 +11,8 @@ app = FastAPI()
 
 # Path to the Piper executable and voice model.
 # Override via environment variables if your layout differs.
-PIPER_BIN   = os.getenv("PIPER_BIN",   "/usr/local/bin/piper")
-PIPER_MODEL = os.getenv("PIPER_MODEL", "/piper/models/en_US-lessac-medium.onnx")
+PIPER_BIN   = os.getenv("PIPER_BIN",   "/home/leo/piper/piper/piper")
+PIPER_MODEL = os.getenv("PIPER_MODEL", "/home/leo/piper/models/it_IT-paola-medium.onnx")
 
 # Sample rate produced by the model (lessac-medium → 22 050 Hz).
 # If you switch models, update this or set PIPER_SAMPLE_RATE accordingly.

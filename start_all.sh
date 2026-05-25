@@ -16,8 +16,12 @@ trap cleanup SIGINT SIGTERM
 
 echo "[+] Starting FastAPI dev services..."
 
-# 2. Engine - main.py (Port 8002)
+# 1. Engine - main.py (Port 8002)
 (cd engine && exec .venv/bin/fastapi dev main.py --port 8002) &
+PIDS+=($!)
+
+# 2. Engine - text_to_speech.py (Port 8003)
+(cd engine && exec .venv/bin/fastapi dev text_to_speech.py --port 8003) &
 PIDS+=($!)
 
 # 3. Orchestrator - router.py (Port 8000)
