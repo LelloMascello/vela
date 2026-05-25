@@ -21,7 +21,7 @@ This module sets up the core FastAPI application and orchestrates the entire rea
 ### Inference Engine (`engine/inference.py`)
 
 This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
-*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) and TTS subprocesses.
+*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) subprocess.
 *   **LLM Streaming:** Implements the logic to stream responses from the LLM. It processes incoming audio, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
 *   **System Prompt:** Defines the behavior of the LLM to ensure voice-friendly, concise responses.
 
