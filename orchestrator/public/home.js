@@ -48,6 +48,8 @@ let timerFrozen    = false;
 
 const audioQueue   = [];
 let audioPlaying   = false;
+let micMuted       = false;   // true while AI audio is playing — mic captured but not sent
+let pendingDoneActions = false; // true when 'done' arrived but audio is still draining
 
 let currentBubble  = null;
 
@@ -222,7 +224,19 @@ function enqueueAudio(b64wav) {
 }
 
 async function drainAudioQueue() {
-  if (!audioQueue.length) { audioPlaying = false; return; }
+  if (!audioQueue.length) {
+    audioPlaying = false;
+    // Last audio chunk finished — now it's safe to unmute and start the silence timer.
+    if (pendingDoneActions) {
+      pendingDoneActions = false;
+      micMuted  = false;
+      pcmBuffer = new Float32Array(0); // discard anything captured while muted
+      unfreezeTimer();
+      resetSilenceTimer();
+      setAiState('waiting');
+    }
+    return;
+  }
   if (!audioCtx)          { audioPlaying = false; audioQueue.length = 0; return; }
 
   audioPlaying = true;
@@ -256,8 +270,10 @@ async function drainAudioQueue() {
 }
 
 function clearAudioQueue() {
-  audioQueue.length = 0;
-  audioPlaying      = false;
+  audioQueue.length    = 0;
+  audioPlaying         = false;
+  micMuted             = false;
+  pendingDoneActions   = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -302,6 +318,10 @@ function downsample(buf, from, to) {
 }
 
 function pushSamples(samples) {
+  // While the mic is muted (user turn ended, AI processing/speaking),
+  // discard everything — don't update the waveform, don't buffer, don't send.
+  if (micMuted) return;
+
   for (let i = 0; i < samples.length; i++) {
     waveData[wavePos % waveData.length] = samples[i];
     wavePos++;
@@ -470,11 +490,24 @@ function switchToMain(ip, port, username) {
       return;
     }
 
+    if (data.type === 'listening_stop') {
+      // VAD has confirmed the user's turn is complete and processing has begun.
+      // Freeze the waveform and stop sending mic audio immediately — before
+      // the first TTS chunk arrives — so there is no gap where the mic stays
+      // live while the LLM is thinking.
+      micMuted   = true;
+      waveActive = false;
+      pcmBuffer  = new Float32Array(0);   // discard any in-flight buffered audio
+      return;
+    }
+
     if (data.type === 'tts_start') {
       turnCount++;
       document.getElementById('st-turns').textContent = turnCount;
       addUserBubble();
       startAiBubble();
+      // micMuted / waveActive already set by 'listening_stop' above.
+      pendingDoneActions = false;  // clear any stale flag from a previous turn
       freezeTimer();
       setAiState('speaking');
       return;
@@ -490,9 +523,18 @@ function switchToMain(ip, port, username) {
 
     if (data.type === 'done') {
       finaliseAiBubble(data.full_text || '');
-      unfreezeTimer();
-      resetSilenceTimer();
-      setAiState('waiting');
+      if (audioPlaying || audioQueue.length) {
+        // Audio is still playing — drainAudioQueue() will handle unmute + timer
+        // once the last chunk finishes.
+        pendingDoneActions = true;
+      } else {
+        // No audio was queued (e.g. TTS was skipped) — act immediately.
+        micMuted  = false;
+        pcmBuffer = new Float32Array(0);
+        unfreezeTimer();
+        resetSilenceTimer();
+        setAiState('waiting');
+      }
       return;
     }
 

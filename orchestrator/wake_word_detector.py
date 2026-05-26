@@ -12,7 +12,7 @@ from pydantic import BaseModel
 SAMPLE_RATE  = 16_000
 FRAME_LENGTH = 1280      # 80 ms @ 16 kHz — recommended by openwakeword
 
-WAKE_WORD = "alexa_v0.1"
+WAKE_WORD = "hey_jarvis_v0.1"
 
 # Detection thresholds
 THRESHOLD        = 0.55  # per-frame score must exceed this

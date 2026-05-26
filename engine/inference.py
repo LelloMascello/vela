@@ -16,7 +16,7 @@ INFERENCE_URL = "http://localhost:8080/v1/chat/completions"
 
 SYSTEM_PROMPT = (
     "Sei un assistente vocale utile. "
-    "Riceverai audio in inglese o italiano; rispondi sempre nella stessa lingua parlata dall'utente. "
+    "Riceverai audio in italiano; rispondi sempre nella stessa lingua parlata dall'utente. "
     "la tua risposta verrà pronunciata ad alta voce, "
     "non mostrata come testo, quindi evita markdown, elenchi puntati e liste lunghe."
 )
@@ -58,9 +58,9 @@ async def launch_backend_services() -> None:
         log.info("Starting llama.cpp …")
         llama_server_process = await asyncio.create_subprocess_shell(
             "/home/leo/llama.cpp/build/bin/llama-server "
-            "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-UD-Q4_K_XL.gguf "
+            "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-Q8_0.gguf "
             "--mmproj /home/leo/llama.cpp/mymodels/mmproj-F16.gguf "
-            "--host 127.0.0.1 --port 8080 -ngl 99 --reasoning off",
+            "--host 127.0.0.1 --port 8080 -ngl 99 --reasoning off docker rm local-mongo",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

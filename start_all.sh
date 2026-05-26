@@ -6,6 +6,10 @@ cleanup() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null
     done
+    
+    echo "[!] Stopping MongoDB container..."
+    docker stop local-mongo 2>/dev/null
+    
     wait
     echo "[+] All services stopped successfully."
     exit 0
@@ -13,6 +17,25 @@ cleanup() {
 
 # Trap Ctrl+C (SIGINT) and termination signals to trigger cleanup
 trap cleanup SIGINT SIGTERM
+
+echo "[+] Starting system dependencies..."
+# Ensure the Docker daemon is running (requires sudo)
+sudo systemctl start docker
+
+# Check if the local-mongo container already exists
+if [ "$(docker ps -a -q -f name=^local-mongo$)" ]; then
+    # If it exists but is currently stopped, start it
+    if [ ! "$(docker ps -q -f name=^local-mongo$)" ]; then
+        echo "[+] Starting existing MongoDB container (local-mongo)..."
+        docker start local-mongo > /dev/null
+    else
+        echo "[+] MongoDB container (local-mongo) is already running."
+    fi
+else
+    # Create and run the container for the first time
+    echo "[+] Provisioning new MongoDB container (local-mongo)..."
+    docker run -d --name local-mongo -p 27017:27017 -v mongo_data:/data/db mongo:7 > /dev/null
+fi
 
 echo "[+] Starting FastAPI dev services..."
 

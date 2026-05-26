@@ -186,6 +186,12 @@ async def voice_pipeline(
 
                 turns_handled += 1
 
+                # Tell the client to stop the mic and freeze the waveform now
+                # that we have captured a valid utterance.  The client will
+                # re-enable both once the last TTS audio chunk has finished
+                # playing (triggered by "done" + audio drain).
+                await websocket.send_json({"type": "listening_stop"})
+
                 # 5. Denoise → encode speech as WAV → base64 ──────────────────
                 log.debug("Denoising PCM | samples=%d", len(pcm_turn))
                 pcm_clean = denoise_pcm(pcm_turn, MIC_SAMPLE_RATE)
