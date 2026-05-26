@@ -14,20 +14,20 @@ The voice pipeline handles the flow: client audio (PCM) is processed by a Silero
 
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
 *   **`/ready` (GET):** Launches necessary backend services (LLM server and TTS server) and reports the current operational status, IP, and port.
-*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client.
+*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client. It also manages mic state, sending a `listening_stop` signal to the client when a valid utterance is detected to prevent mic input during AI processing.
 *   **Audio Utilities:** Provides core functions for VAD iteration, PCM encoding to WAV format, and TTS audio forwarding.
 *   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
 
 ### Inference Engine (`engine/inference.py`)
 
 This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
-*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) subprocess.
+*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) subprocess, utilizing the `gemma-4-E4B-it-Q8_0.gguf` model.
 *   **LLM Streaming:** Implements the logic to stream responses from the LLM. It processes incoming audio, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
-*   **System Prompt:** Defines the behavior of the LLM to ensure voice-friendly, concise responses.
+*   **System Prompt:** Defines the behavior of the LLM, instructing it to only accept and respond in Italian.
 
 ### Text-to-Speech Engine (`engine/text_to_speech.py`)
 
-This module handles the text-to-speech functionality, receiving text phrases from the LLM and returning synthesized audio data.
+This module handles the text-to-speech functionality, receiving text phrases from the LLM and returning synthesized audio data using the `it_IT-riccardo-x_low.onnx` model.
 
 ### Authentication Service (`orchestrator/auth.py`)
 
