@@ -1,16 +1,3 @@
-"""
-speech_to_text.py — Whisper-based ASR microservice
-====================================================
-Mirrors the TTS service interface so the voice pipeline treats both
-services symmetrically.
-
-Endpoint
---------
-POST /
-  Body : raw WAV bytes  (Content-Type: audio/wav)
-  Returns: {"text": "<transcript>", "language": "<detected_lang>", "duration_s": <float>}
-"""
-
 import io
 import logging
 import sys
