@@ -15,14 +15,15 @@ log = logging.getLogger("audio")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+SPEECH_TO_TEXT_URL       = "http://localhost:8004/"
 TEXT_TO_SPEECH_URL       = "http://localhost:8003/"
 MIC_SAMPLE_RATE          = 16_000
 PCM_CHUNK_SAMPLES        = 512
 PCM_CHUNK_BYTES_EXPECTED = PCM_CHUNK_SAMPLES * 2   # 16-bit → 2 bytes/sample
 
 # VAD sensitivity — raise threshold / silence duration to reduce false triggers.
-VAD_THRESHOLD         = 0.65   # default 0.50 — ignore faint / background noise
-VAD_MIN_SILENCE_MS    = 400    # default 100 ms — wait before ending a turn
+VAD_THRESHOLD         = 0.55   # lowered from 0.65 — less likely to clip word starts
+VAD_MIN_SILENCE_MS    = 600    # raised from 400 ms — less likely to cut trailing syllables
 VAD_SPEECH_PAD_MS     = 60     # default 30 ms  — padding around speech edges
 MIN_SPEECH_DURATION_S = 0.5    # discard blips shorter than this
 
@@ -70,6 +71,40 @@ def encode_pcm_as_wav(pcm_f32: np.ndarray, sample_rate: int) -> bytes:
         w.setframerate(sample_rate)
         w.writeframes(pcm_int16.tobytes())
     return buf.getvalue()
+
+
+async def transcribe_audio(
+    http_client: httpx.AsyncClient,
+    wav_bytes:   bytes,
+) -> str:
+    """
+    POST *wav_bytes* to the STT service and return the transcript string.
+
+    Raises httpx.HTTPStatusError on a non-2xx response so the caller can
+    decide whether to skip the turn or surface an error to the client.
+    """
+    log.info("STT → bytes=%d", len(wav_bytes))
+    t0 = time.perf_counter()
+
+    resp = await http_client.post(
+        SPEECH_TO_TEXT_URL,
+        content=wav_bytes,
+        headers={"Content-Type": "audio/wav"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+
+    data       = resp.json()
+    transcript = data.get("text", "").strip()
+    language   = data.get("language", "?")
+
+    log.info(
+        "STT ← status=%d | language=%s | chars=%d | elapsed=%.3f s",
+        resp.status_code, language, len(transcript), time.perf_counter() - t0,
+    )
+    log.debug("Transcript: %r", transcript)
+
+    return transcript
 
 
 async def synthesize_and_forward_audio(

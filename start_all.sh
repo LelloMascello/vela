@@ -47,16 +47,26 @@ PIDS+=($!)
 (cd engine && exec .venv/bin/fastapi dev text_to_speech.py --port 8003) &
 PIDS+=($!)
 
-# 3. Orchestrator - router.py (Port 8000)
+# 3. Engine - speech_to_text.py (Port 8004)
+(cd engine && exec .venv/bin/fastapi dev speech_to_text.py --port 8004) &
+PIDS+=($!)
+
+# 4. Orchestrator - router.py (Port 8000)
 (cd orchestrator && exec .venv/bin/fastapi dev router.py --port 8000) &
 PIDS+=($!)
 
-# 4. Orchestrator - wake_word_detector.py (Port 8001)
+# 5. Orchestrator - wake_word_detector.py (Port 8001)
 (cd orchestrator && exec .venv/bin/fastapi dev wake_word_detector.py --port 8001) &
 PIDS+=($!)
 
-# 5. Orchestrator - website.py (Port 8005)
+# 6. Orchestrator - website.py (Port 8005)
 (cd orchestrator && exec .venv/bin/fastapi dev website.py --port 8005) &
+PIDS+=($!)
+
+# 7. llama.cpp server (Port 8080)
+/home/leo/llama.cpp/build/bin/llama-server \
+    -m /home/leo/llama.cpp/mymodels/gemma-4-E2B-it-UD-Q4_M_XL.gguf \
+    --host 127.0.0.1 --port 8080 -ngl 99 --reasoning off &
 PIDS+=($!)
 
 echo "[+] All services are up and running!"

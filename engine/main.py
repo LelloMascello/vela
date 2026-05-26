@@ -17,8 +17,6 @@ from audio import (
     make_vad_iterator,
 )
 from inference import (
-    launch_backend_services,
-    shutdown_backend_services,
     stream_llm_response,
 )
 
@@ -43,9 +41,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SERVICE_HOST = "127.0.0.1"
-SERVICE_PORT = 8002
-
 DATABASE_URL = "http://127.0.0.1:8005/chats/insert"
 
 # How many seconds of silence (no VAD speech detected) before the connection
@@ -53,30 +48,6 @@ DATABASE_URL = "http://127.0.0.1:8005/chats/insert"
 SILENCE_TIMEOUT_S = 10.0
 
 active_connections: set[WebSocket] = set()
-
-
-# ── /ready ────────────────────────────────────────────────────────────────────
-
-@app.get("/ready")
-async def ready():
-    """Launch backend services and return WebSocket connection info."""
-    log.info("GET /ready — launching backend services …")
-    ready = False
-    try:
-        await launch_backend_services()
-        import asyncio
-        await asyncio.sleep(3)   # give services time to initialise
-        ready = True
-        log.info("Services ready")
-    except Exception as exc:
-        log.exception("Failed to launch backend services: %s", exc)
-
-    return {
-        "ready":     ready,
-        "ip":        SERVICE_HOST,
-        "port":      SERVICE_PORT,
-        "websocket": f"ws://{SERVICE_HOST}:{SERVICE_PORT}/ws",
-    }
 
 
 # ── WebSocket voice pipeline ──────────────────────────────────────────────────
@@ -88,16 +59,21 @@ async def voice_pipeline(
 ):
     """
     Main voice pipeline:
-      client mic (PCM) → VAD → denoise → llama.cpp (Gemma 4) → TTS → client
+      client mic (PCM) → VAD → denoise → Whisper STT → Gemma 4 → TTS → client
 
     Input:  16-bit signed PCM, mono, 16 kHz, 512 samples/chunk (1 024 bytes).
 
     Server → client messages:
+      {"type": "listening_stop"}              ← mute mic + freeze waveform
       {"type": "tts_start"}
       {"type": "chunk",  "text": str, "audio": b64|null}
       {"type": "tts_end"}
       {"type": "done",   "full_text": str}
-      {"type": "silence_timeout"}   ← client must reconnect to router /ws
+      {"type": "silence_timeout"}             ← client must reconnect to router /ws
+
+    Client → server control messages (text JSON):
+      {"type": "mic_open"}                    ← last TTS audio finished playing;
+                                                restart silence timer now
     """
     await websocket.accept()
     active_connections.add(websocket)
@@ -123,8 +99,39 @@ async def voice_pipeline(
         async with httpx.AsyncClient(timeout=120.0) as http_client:
             while True:
 
-                # 1. Receive raw PCM chunk ─────────────────────────────────────
-                raw = await websocket.receive_bytes()
+                # 1. Receive next message — either raw PCM bytes or a JSON
+                #    control message sent by the client (e.g. {"type":"mic_open"}).
+                msg = await websocket.receive()
+
+                # websocket.receive() returns the raw ASGI message dict; a
+                # "websocket.disconnect" frame does NOT raise WebSocketDisconnect
+                # automatically.  Raising it here keeps all cleanup in one place.
+                if msg["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(code=msg.get("code", 1000))
+
+                # ── Control message (text JSON) ────────────────────────────────
+                if "text" in msg:
+                    try:
+                        import json as _json
+                        ctrl = _json.loads(msg["text"])
+                    except Exception:
+                        ctrl = {}
+
+                    if ctrl.get("type") == "mic_open":
+                        # The client has finished draining TTS audio and has
+                        # re-opened the microphone.  Only now is it correct to
+                        # start counting silence — any earlier and we'd fire the
+                        # timeout while audio was still playing on the client.
+                        silence_start = time.monotonic()
+                        log.debug("mic_open received — silence timer started")
+
+                    continue   # control messages never contain PCM
+
+                # ── Binary PCM chunk ──────────────────────────────────────────
+                raw = msg.get("bytes")
+                if not raw:
+                    continue
+
                 chunks_received += 1
 
                 if len(raw) != PCM_CHUNK_BYTES_EXPECTED:
@@ -192,29 +199,38 @@ async def voice_pipeline(
                 # playing (triggered by "done" + audio drain).
                 await websocket.send_json({"type": "listening_stop"})
 
-                # 5. Denoise → encode speech as WAV → base64 ──────────────────
+                # 5. Denoise → encode as WAV bytes ────────────────────────────
                 log.debug("Denoising PCM | samples=%d", len(pcm_turn))
                 pcm_clean = denoise_pcm(pcm_turn, MIC_SAMPLE_RATE)
-
                 wav_bytes = encode_pcm_as_wav(pcm_clean, MIC_SAMPLE_RATE)
-                wav_b64   = __import__("base64").b64encode(wav_bytes).decode()
-                log.debug("WAV encoded | bytes=%d | b64_chars=%d", len(wav_bytes), len(wav_b64))
+                log.debug("WAV encoded | bytes=%d", len(wav_bytes))
 
-                # 6. Stream LLM response → TTS → client ───────────────────────
-                full_text = await stream_llm_response(
-                    websocket, http_client, wav_b64, turns_handled, conversation_history
+                # 6. STT → LLM → TTS → client ─────────────────────────────────
+                full_text, transcript = await stream_llm_response(
+                    websocket, http_client, wav_bytes, turns_handled, conversation_history
                 )
 
-                conversation_history.append({"role": "user",      "content": "(voice input)"})
+                if not transcript:
+                    # Whisper returned nothing (e.g. silence slip through VAD).
+                    # Don't append empty turns to history; just re-arm the timer.
+                    log.warning("Turn #%d produced no transcript — skipping history", turns_handled)
+                    silence_start = time.monotonic()
+                    continue
+
+                conversation_history.append({"role": "user",      "content": transcript})
                 conversation_history.append({"role": "assistant", "content": full_text})
                 log.debug("History length: %d messages", len(conversation_history))
 
                 await websocket.send_json({"type": "done", "full_text": full_text})
                 log.info("Turn #%d complete", turns_handled)
 
-                # 7. Response delivered — restart the silence timer ────────────
-                silence_start = time.monotonic()
-                log.debug("Silence timer restarted after turn #%d", turns_handled)
+                # Silence timer stays suspended (silence_start = None) until the
+                # client sends {"type": "mic_open"}, which fires only after the
+                # last TTS audio chunk has finished playing.  Restarting the
+                # timer here would be too early — audio may still be playing for
+                # several seconds on the client.
+                silence_start = None
+                log.debug("Silence timer suspended — waiting for mic_open from client")
 
     except WebSocketDisconnect:
         active_connections.discard(websocket)
@@ -239,6 +255,3 @@ async def voice_pipeline(
             "Client disconnected user=%s | chunks=%d | turns=%d | remaining=%d",
             username, chunks_received, turns_handled, len(active_connections),
         )
-        if not active_connections:
-            log.info("No active clients — shutting down backend services")
-            await shutdown_backend_services()

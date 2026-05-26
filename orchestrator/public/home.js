@@ -234,6 +234,12 @@ async function drainAudioQueue() {
       unfreezeTimer();
       resetSilenceTimer();
       setAiState('waiting');
+      // Notify the server that the mic is open again so it can start counting
+      // silence from this exact moment — not from when "done" was sent, which
+      // could be several seconds earlier while TTS was still playing.
+      if (wsMain && wsMain.readyState === WebSocket.OPEN) {
+        wsMain.send(JSON.stringify({ type: 'mic_open' }));
+      }
     }
     return;
   }

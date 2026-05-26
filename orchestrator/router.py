@@ -18,8 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DETECTOR_URL = "http://localhost:8001"
-OTHER_SERVER_URL = "http://localhost:8002/ready"
+DETECTOR_URL    = "http://localhost:8001"
+MAIN_WS_HOST    = "127.0.0.1"
+MAIN_WS_PORT    = 8002
 
 
 async def _fetch_frame_length(client: httpx.AsyncClient) -> int:
@@ -98,29 +99,15 @@ async def websocket_endpoint(
                     result = resp.json()
 
                     if result.get("wake_word"):
-                        try:
-                            ready_resp = await client.get(OTHER_SERVER_URL, timeout=5.0)
-                            ready_resp.raise_for_status()
-                            server_info = ready_resp.json()
-                        except Exception as exc:
-                            await websocket.send_json({"error": f"Other server error: {exc}"})
-                            continue
-
-                        if server_info.get("ready"):
-                            ip = server_info.get("ip")
-                            port = server_info.get("port")
-                            if ip is None or port is None:
-                                await websocket.send_json(
-                                    {"error": "Other server response missing ip/port"}
-                                )
-                                continue
-
-                            await websocket.send_json({
-                                "ip": ip,
-                                "port": port,
-                                "message": "server ready",
-                                "username": username,  # fix: username inoltrato al client per il redirect
-                            })
+                        # llama.cpp and main.py are always up (started by
+                        # start_all.sh), so redirect the client directly without
+                        # polling /ready first.
+                        await websocket.send_json({
+                            "ip":       MAIN_WS_HOST,
+                            "port":     MAIN_WS_PORT,
+                            "message":  "server ready",
+                            "username": username,
+                        })
 
         except WebSocketDisconnect:
             print(f"Client disconnected: {username}")

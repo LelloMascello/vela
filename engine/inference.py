@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import time
@@ -6,7 +5,7 @@ import time
 import httpx
 from fastapi import WebSocket
 
-from audio import MIC_SAMPLE_RATE, synthesize_and_forward_audio
+from audio import MIC_SAMPLE_RATE, synthesize_and_forward_audio, transcribe_audio
 
 log = logging.getLogger("inference")
 
@@ -16,103 +15,48 @@ INFERENCE_URL = "http://localhost:8080/v1/chat/completions"
 
 SYSTEM_PROMPT = (
     "Sei un assistente vocale utile. "
-    "Riceverai audio in italiano; rispondi sempre nella stessa lingua parlata dall'utente. "
+    "Riceverai messaggi in inglese o italiano; rispondi sempre nella stessa lingua parlata dall'utente. "
     "la tua risposta verrà pronunciata ad alta voce, "
     "non mostrata come testo, quindi evita markdown, elenchi puntati e liste lunghe."
 )
 
 SENTENCE_BOUNDARY_CHARS = (".", "!", "?", "…", "\n")
 
-# ── Subprocess handle (module-level, mutated by launch / shutdown) ────────────
-
-llama_server_process: asyncio.subprocess.Process | None = None
-
-
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-async def _pipe_output(proc: asyncio.subprocess.Process, logger: logging.Logger) -> None:
-    """Relay stdout/stderr of a subprocess into *logger* in real time."""
-    async def _drain(stream: asyncio.StreamReader | None, level: int) -> None:
-        if stream is None:
-            return
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            logger.log(level, line.decode(errors="replace").rstrip())
-
-    await asyncio.gather(
-        _drain(proc.stdout, logging.INFO),
-        _drain(proc.stderr, logging.WARNING),
-    )
-    logger.info("Process exited (rc=%s)", proc.returncode)
-
-
-# ── Service lifecycle ─────────────────────────────────────────────────────────
-
-async def launch_backend_services() -> None:
-    """Start llama.cpp subprocess if it is not already running."""
-    global llama_server_process
-
-    if llama_server_process is None or llama_server_process.returncode is not None:
-        log.info("Starting llama.cpp …")
-        llama_server_process = await asyncio.create_subprocess_shell(
-            "/home/leo/llama.cpp/build/bin/llama-server "
-            "-m /home/leo/llama.cpp/mymodels/gemma-4-E4B-it-Q8_0.gguf "
-            "--mmproj /home/leo/llama.cpp/mymodels/mmproj-F16.gguf "
-            "--host 127.0.0.1 --port 8080 -ngl 99 --reasoning off docker rm local-mongo",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        log.info("llama.cpp started — pid=%d", llama_server_process.pid)
-        asyncio.create_task(
-            _pipe_output(llama_server_process, logging.getLogger("llama.cpp"))
-        )
-    else:
-        log.debug("llama.cpp already running (pid=%d)", llama_server_process.pid)
-
-
-async def shutdown_backend_services() -> None:
-    """Terminate llama.cpp subprocess gracefully."""
-    global llama_server_process
-
-    if llama_server_process and llama_server_process.returncode is None:
-        log.info("Terminating llama.cpp (pid=%d) …", llama_server_process.pid)
-        llama_server_process.terminate()
-        await llama_server_process.wait()
-        log.info("llama.cpp terminated (rc=%d)", llama_server_process.returncode)
-        llama_server_process = None
-
-
 # ── LLM streaming ─────────────────────────────────────────────────────────────
 
 async def stream_llm_response(
     websocket:            WebSocket,
     http_client:          httpx.AsyncClient,
-    speech_wav_b64:       str,
+    wav_bytes:            bytes,
     turn_number:          int,
     conversation_history: list[dict] | None = None,
-) -> str:
+) -> tuple[str, str]:
     """
-    Stream a response from llama.cpp for *speech_wav_b64* and forward audio
-    phrases to the client via TTS as each sentence boundary is reached.
+    Transcribe *wav_bytes* via Whisper, then stream a response from llama.cpp
+    and forward audio phrases to the client via TTS as each sentence boundary
+    is reached.
 
-    Returns the complete text response.
+    Returns ``(full_llm_response, transcript)`` so the caller can store both
+    in conversation history correctly.
     """
     history = conversation_history or []
 
+    # ── 1. Speech → Text ──────────────────────────────────────────────────────
+    try:
+        transcript = await transcribe_audio(http_client, wav_bytes)
+    except Exception as exc:
+        log.error("Transcription failed on turn #%d: %s", turn_number, exc)
+        transcript = ""
+
+    if not transcript:
+        log.warning("Empty transcript on turn #%d — skipping LLM call", turn_number)
+        return "", ""
+
+    # ── 2. Build message list (plain text, no audio blobs) ────────────────────
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         *history,
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_audio",
-                    "input_audio": {"data": speech_wav_b64, "format": "wav"},
-                }
-            ],
-        },
+        {"role": "user", "content": transcript},
     ]
 
     payload = {
@@ -123,8 +67,8 @@ async def stream_llm_response(
     }
 
     log.info(
-        "→ LLM request | turn=#%d | history_turns=%d | wav_b64_chars=%d",
-        turn_number, len(history) // 2, len(speech_wav_b64),
+        "→ LLM request | turn=#%d | history_turns=%d | transcript=%r",
+        turn_number, len(history) // 2, transcript[:120],
     )
     t0 = time.perf_counter()
 
@@ -135,6 +79,7 @@ async def stream_llm_response(
     tts_started        = False
     first_token_logged = False
 
+    # ── 3. Stream LLM → TTS ───────────────────────────────────────────────────
     async with http_client.stream("POST", INFERENCE_URL, json=payload) as stream:
         async for raw_line in stream.aiter_lines():
             if not raw_line.startswith("data: "):
@@ -175,6 +120,7 @@ async def stream_llm_response(
                     log.info("Flushing phrase #%d (%d chars)", phrase_count, len(phrase))
                     await synthesize_and_forward_audio(websocket, http_client, phrase)
 
+    # Flush any trailing text that didn't end with a sentence boundary.
     if pending_phrase.strip():
         phrase_count += 1
         phrase = pending_phrase.strip()
@@ -191,4 +137,4 @@ async def stream_llm_response(
         "← LLM complete | turn=#%d | tokens=%d | phrases=%d | chars=%d | elapsed=%.3f s",
         turn_number, token_count, phrase_count, len(full_response), time.perf_counter() - t0,
     )
-    return full_response
+    return full_response, transcript
