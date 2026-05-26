@@ -6,24 +6,22 @@
 
 Vela is a system designed for real-time audio processing, featuring user authentication, a WebSocket interface for audio streaming, and an integrated voice pipeline. The system utilizes a FastAPI backend for handling real-time connections, integrating a Silero VAD for speech detection, a local LLM (Gemma 4), and a Text-to-Speech service to create a complete voice interaction pipeline.
 
-The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, denoised, speech segments are sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client. This process is managed by a sophisticated streaming mechanism that handles LLM token generation, real-time audio synthesis forwarding, and implements a silence timeout mechanism to automatically close connections if no speech is detected for too long.
+The voice pipeline handles the flow: client audio (PCM) is processed by a Silero VAD, denoised, speech segments are sent to a Speech-to-Text (STT) service, the resulting transcript is sent to the LLM for text generation, the resulting text is sent to a TTS service, and the audio chunks are streamed back to the client. This process is managed by a sophisticated streaming mechanism that handles LLM token generation, real-time audio synthesis forwarding, and implements a silence timeout mechanism to automatically close connections if no speech is detected for too long.
 
 ## Components
 
 ### Engine Core (`engine/main.py`)
 
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
-*   **`/ready` (GET):** Launches necessary backend services (LLM server and TTS server) and reports the current operational status, IP, and port.
-*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client. It also manages mic state, sending a `listening_stop` signal to the client when a valid utterance is detected to prevent mic input during AI processing.
+*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the STT service, sends the transcript to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client. It also manages mic state, sending a `listening_stop` signal to the client when a valid utterance is detected to prevent mic input during AI processing.
 *   **Audio Utilities:** Provides core functions for VAD iteration, PCM encoding to WAV format, and TTS audio forwarding.
 *   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
 
 ### Inference Engine (`engine/inference.py`)
 
 This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
-*   **Service Lifecycle:** Responsible for launching and gracefully shutting down the `llama.cpp` (LLM server) subprocess, utilizing the `gemma-4-E4B-it-Q8_0.gguf` model.
-*   **LLM Streaming:** Implements the logic to stream responses from the LLM. It processes incoming audio, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
-*   **System Prompt:** Defines the behavior of the LLM, instructing it to only accept and respond in Italian.
+*   **LLM Streaming:** Implements the logic to transcribe incoming audio via STT, then stream responses from the LLM. It processes the transcript, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
+*   **System Prompt:** Defines the behavior of the LLM, instructing it to accept and respond in either Italian or English.
 
 ### Text-to-Speech Engine (`engine/text_to_speech.py`)
 
@@ -42,7 +40,6 @@ The router acts as the main entry point for the application. It exposes HTTP end
 The application is served via FastAPI, mounting static files from the `/public` directory.
 
 *   **Accessing the Interface:** The main interface is served by serving `public/index.html` at the root path (`/`).
-*   **Server Status Check:** Use the `/ready` endpoint to check the operational status and connection details of the server.
 *   **Voice Pipeline Interaction:**
     *   **Audio Streaming:** Connect via WebSocket to `/ws` to stream raw PCM audio data.
     *   **Authentication Endpoints:**
