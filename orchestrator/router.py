@@ -39,12 +39,6 @@ async def _fetch_frame_length(client: httpx.AsyncClient) -> int:
 
 
 async def _reset_detector(client: httpx.AsyncClient) -> None:
-    """Ask the detector to clear its internal state (best-effort).
-
-    Not all detector implementations expose a /reset endpoint; if the call
-    fails for any reason we log and continue — the WARMUP_FRAMES skip below
-    acts as a secondary safeguard.
-    """
     try:
         resp = await client.post(f"{DETECTOR_URL}/reset", timeout=5.0)
         resp.raise_for_status()

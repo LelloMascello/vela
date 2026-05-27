@@ -87,20 +87,6 @@ class AudioRequest(BaseModel):
 
 @app.post("/reset")
 async def reset():
-    """Clear per-session score state so stale high scores from a previous
-    wake-word hit cannot trigger an immediate false positive on reconnect.
-
-    What is reset:
-    - _score_history          : the rolling smoothing window (direct false-positive source)
-    - oww_model.prediction_buffer : openwakeword's own score history deques
-
-    What is intentionally NOT reset:
-    - _noise_profile / _noise_buf : environment noise is constant across sessions;
-      resetting forces a 1.6 s re-profiling delay and leaves frames unfiltered.
-    - oww_model preprocessor ring buffer : the mel-spectrogram pipeline must stay
-      primed; emptying it prevents the model from producing any predictions until
-      the buffer refills, which breaks detection for the entire warm-up window.
-    """
     _score_history.clear()
 
     with oww_lock:

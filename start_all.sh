@@ -1,7 +1,7 @@
 #!/bin/bash
 
 WHISPER_BIN="/home/leo/whisper.cpp/build/bin/whisper-server"
-WHISPER_MODEL="/home/leo/whisper.cpp/models/ggml-small-q5_1.bin"
+WHISPER_MODEL="/home/leo/whisper.cpp/models/ggml-large-v3-turbo-q5_0.bin"
 
 # Function to cleanly stop all services when you press Ctrl+C
 cleanup() {
