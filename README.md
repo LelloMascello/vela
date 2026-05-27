@@ -20,7 +20,7 @@ This module sets up the core FastAPI application and orchestrates the entire rea
 ### Inference Engine (`engine/inference.py`)
 
 This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
-*   **STT Interaction:** Audio segments are sent to an external `whisper-server` via multipart/form-data for transcription. The system is configured to use a specific language (e.g., Italian) for faster processing, bypassing automatic language detection.
+*   **STT Interaction:** Audio segments are sent to an external `whisper-server` via multipart/form-data for transcription. The system is configured to use a specific language (e.g., Italian) for faster processing, bypassing automatic language detection, utilizing the `ggml-large-v3-turbo-q5_0.bin` model.
 *   **LLM Streaming:** Implements the logic to transcribe incoming audio via STT, then stream responses from the LLM. It processes the transcript, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
 *   **System Prompt:** Defines the behavior of the LLM, instructing it to accept and respond in either Italian or English.
 
