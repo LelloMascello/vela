@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from auth import signup, login
 import pymongo
 from bson import json_util
+from pydantic import BaseModel
+from typing import List, Dict, Any
 
 mydb = pymongo.MongoClient("mongodb://localhost:27017/")["ai_assistant"]
 mycol = mydb["ai_chats"]
@@ -15,30 +17,40 @@ app = FastAPI()
 app.mount("/public", StaticFiles(directory="public"), name="public")
 
 
+# ── Pydantic Schema for Validation ──────────────────────────────────────────
+
+class ChatSession(BaseModel):
+    username: str
+    created_at: int      # unix ms timestamp
+    chat: List[Dict[str, Any]]
+
+
 # ── Page routes ────────────────────────────────────────────────────────────
+# Changed to standard 'def' because synchronous file reading blocks the event loop.
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+def index():
     with open("public/index.html") as f:
         return f.read()
 
 
 @app.get("/home", response_class=HTMLResponse)
-async def home():
+def home():
     with open("public/home.html") as f:
         return f.read()
 
 
 @app.get("/chats", response_class=HTMLResponse)
-async def chats_page():
+def chats_page():
     with open("public/chats.html") as f:
         return f.read()
 
 
 # ── Auth routes ────────────────────────────────────────────────────────────
+# Changed to standard 'def' assuming the imported auth functions are synchronous.
 
 @app.post("/signup")
-async def do_signup(username: str = Form(...), password: str = Form(...)):
+def do_signup(username: str = Form(...), password: str = Form(...)):
     result = signup(username, password)
     if result:
         return JSONResponse({"ok": True, "username": result["username"]})
@@ -46,7 +58,7 @@ async def do_signup(username: str = Form(...), password: str = Form(...)):
 
 
 @app.post("/login")
-async def do_login(username: str = Form(...), password: str = Form(...)):
+def do_login(username: str = Form(...), password: str = Form(...)):
     result = login(username, password)
     if result:
         return JSONResponse({"ok": True, "username": result["username"]})
@@ -54,38 +66,29 @@ async def do_login(username: str = Form(...), password: str = Form(...)):
 
 
 # ── Chat routes ────────────────────────────────────────────────────────────
+# Changed to standard 'def' because pymongo is synchronous. FastAPI will safely 
+# run these inside a thread pool to avoid freezing the server.
 
 @app.post("/chats/insert")
-async def insert_chats(history: dict):
+def insert_chats(history: ChatSession):
     """
     Save a completed voice session as a new chat document.
-
-    Expected body:
-      {
-        "username":   str,
-        "created_at": int,      <- unix ms timestamp
-        "chat":       list[{role, content}]
-      }
-
-    Each call inserts a NEW document so all sessions are preserved.
-    There is no duplicate-key risk because MongoDB assigns its own _id.
+    Validated automatically via Pydantic.
     """
-    username = history.get("username")
-    if not username:
-        raise HTTPException(status_code=400, detail="Missing 'username' field in body")
-    if not history.get("chat"):
+    if not history.chat:
         # Nothing to save — skip silently.
         return {"status": "skipped", "reason": "empty chat"}
 
     try:
-        result = mycol.insert_one(history)
+        # Convert Pydantic model to dict for MongoDB insertion
+        result = mycol.insert_one(history.model_dump())
         return {"status": "success", "inserted_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @app.get("/chats/select")
-async def select_chats(username: str):
+def select_chats(username: str):
     """Return all saved sessions for *username*, newest first."""
     try:
         chats = list(
