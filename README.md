@@ -34,7 +34,7 @@ This module handles user registration and login. It implements secure credential
 
 ### Router and WebSocket Server (`orchestrator/router.py`)
 
-The router acts as the main entry point for the application. It exposes HTTP endpoints (`/login`, `/signup`) for user management and a WebSocket endpoint (`/ws`) for real-time audio data handling, managing the complex voice pipeline flow.
+The router acts as the main entry point for the application. It exposes HTTP endpoints (`/login`, `/signup`) for user management and a WebSocket endpoint (`/ws`) for real-time audio data handling, managing the complex voice pipeline flow. Upon connection, the router performs a detector state reset and implements a warm-up period (10 frames) to ensure the wake-word detector's internal buffers are filled with fresh audio, preventing false positives at the start of a new session.
 
 ## Setup and Usage
 
