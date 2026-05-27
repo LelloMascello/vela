@@ -21,11 +21,15 @@ MIC_SAMPLE_RATE          = 16_000
 PCM_CHUNK_SAMPLES        = 512
 PCM_CHUNK_BYTES_EXPECTED = PCM_CHUNK_SAMPLES * 2   # 16-bit → 2 bytes/sample
 
-# VAD sensitivity — raise threshold / silence duration to reduce false triggers.
-VAD_THRESHOLD         = 0.55   # lowered from 0.65 — less likely to clip word starts
-VAD_MIN_SILENCE_MS    = 600    # raised from 400 ms — less likely to cut trailing syllables
-VAD_SPEECH_PAD_MS     = 60     # default 30 ms  — padding around speech edges
-MIN_SPEECH_DURATION_S = 0.5    # discard blips shorter than this
+# VAD sensitivity
+VAD_THRESHOLD         = 0.55
+VAD_MIN_SILENCE_MS    = 600
+VAD_SPEECH_PAD_MS     = 60
+MIN_SPEECH_DURATION_S = 0.5
+
+# Whisper language — set to "it" to skip language detection (faster).
+# Use "auto" only if you genuinely need English/Italian switching.
+WHISPER_LANGUAGE = "it"
 
 # ── VAD model (loaded once at import time, shared across connections) ─────────
 
@@ -49,20 +53,13 @@ def make_vad_iterator() -> VADIterator:
 
 
 def denoise_pcm(pcm_f32: np.ndarray, sample_rate: int) -> np.ndarray:
-    """
-    Apply spectral noise reduction to a float32 mono PCM array.
-
-    noisereduce uses the first ~0.5 s as a noise profile when no explicit
-    noise clip is provided, which works well for microphone captures where
-    the user hasn't started speaking yet at the very beginning of the buffer.
-    Returns a float32 array of the same length.
-    """
+    """Apply spectral noise reduction to a float32 mono PCM array."""
     denoised = nr.reduce_noise(y=pcm_f32, sr=sample_rate, stationary=False)
     return denoised.astype(np.float32)
 
 
 def encode_pcm_as_wav(pcm_f32: np.ndarray, sample_rate: int) -> bytes:
-    """Encode a float32 mono PCM array as an in-memory WAV file (stdlib only)."""
+    """Encode a float32 mono PCM array as an in-memory WAV file."""
     pcm_int16 = (pcm_f32 * 32_767.0).clip(-32_768, 32_767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -78,18 +75,21 @@ async def transcribe_audio(
     wav_bytes:   bytes,
 ) -> str:
     """
-    POST *wav_bytes* to the STT service and return the transcript string.
+    POST wav_bytes to the whisper.cpp server and return the transcript.
 
-    Raises httpx.HTTPStatusError on a non-2xx response so the caller can
-    decide whether to skip the turn or surface an error to the client.
+    whisper-server expects multipart/form-data with a 'file' field.
+    Response: {"text": "...", "language": "it", ...}
     """
     log.info("STT → bytes=%d", len(wav_bytes))
     t0 = time.perf_counter()
 
     resp = await http_client.post(
-        SPEECH_TO_TEXT_URL,
-        content=wav_bytes,
-        headers={"Content-Type": "audio/wav"},
+        SPEECH_TO_TEXT_URL + "inference",
+        files={"file": ("audio.wav", wav_bytes, "audio/wav")},
+        data={
+            "response_format": "json",
+            "language":        WHISPER_LANGUAGE,
+        },
         timeout=30.0,
     )
     resp.raise_for_status()
@@ -113,7 +113,7 @@ async def synthesize_and_forward_audio(
     phrase:      str,
 ) -> None:
     """
-    POST *phrase* to the TTS service and forward the resulting audio to the client.
+    POST phrase to the TTS service and forward the resulting audio to the client.
 
     Sends:  {"type": "chunk", "text": str, "audio": <base64-wav> | null}
     """

@@ -1,8 +1,11 @@
 #!/bin/bash
 
+WHISPER_BIN="/home/leo/whisper.cpp/build/bin/whisper-server"
+WHISPER_MODEL="/home/leo/whisper.cpp/models/ggml-small-q5_1.bin"
+
 # Function to cleanly stop all services when you press Ctrl+C
 cleanup() {
-    echo -e "\n[!] Stopping all FastAPI services..."
+    echo -e "\n[!] Stopping all services..."
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null
     done
@@ -19,12 +22,10 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 echo "[+] Starting system dependencies..."
-# Ensure the Docker daemon is running (requires sudo)
 sudo systemctl start docker
 
 # Check if the local-mongo container already exists
 if [ "$(docker ps -a -q -f name=^local-mongo$)" ]; then
-    # If it exists but is currently stopped, start it
     if [ ! "$(docker ps -q -f name=^local-mongo$)" ]; then
         echo "[+] Starting existing MongoDB container (local-mongo)..."
         docker start local-mongo > /dev/null
@@ -32,12 +33,11 @@ if [ "$(docker ps -a -q -f name=^local-mongo$)" ]; then
         echo "[+] MongoDB container (local-mongo) is already running."
     fi
 else
-    # Create and run the container for the first time
     echo "[+] Provisioning new MongoDB container (local-mongo)..."
     docker run -d --name local-mongo -p 27017:27017 -v mongo_data:/data/db mongo:7 > /dev/null
 fi
 
-echo "[+] Starting FastAPI dev services..."
+echo "[+] Starting services..."
 
 # 1. Engine - main.py (Port 8002)
 (cd engine && exec .venv/bin/fastapi dev main.py --port 8002) &
@@ -47,8 +47,16 @@ PIDS+=($!)
 (cd engine && exec .venv/bin/fastapi dev text_to_speech.py --port 8003) &
 PIDS+=($!)
 
-# 3. Engine - speech_to_text.py (Port 8004)
-(cd engine && exec .venv/bin/fastapi dev speech_to_text.py --port 8004) &
+# 3. whisper-server replaces speech_to_text.py (Port 8004)
+"$WHISPER_BIN" \
+    --model "$WHISPER_MODEL" \
+    --host 127.0.0.1 \
+    --port 8004 \
+    --language it \
+    --threads $(nproc) \
+    --beam-size 1 \
+    --best-of 1 \
+    --no-timestamps &
 PIDS+=($!)
 
 # 4. Orchestrator - router.py (Port 8000)
@@ -65,12 +73,11 @@ PIDS+=($!)
 
 # 7. llama.cpp server (Port 8080)
 /home/leo/llama.cpp/build/bin/llama-server \
-    -m /home/leo/llama.cpp/mymodels/gemma-4-E2B-it-UD-Q4_M_XL.gguf \
+    -m /home/leo/llama.cpp/mymodels/gemma-4-E2B-it-UD-Q4_K_XL.gguf \
     --host 127.0.0.1 --port 8080 -ngl 99 --reasoning off &
 PIDS+=($!)
 
 echo "[+] All services are up and running!"
 echo "[+] Press Ctrl+C to stop all services at once."
 
-# Keep the script running to monitor background processes
 wait
