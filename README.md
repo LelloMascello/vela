@@ -13,13 +13,14 @@ The voice pipeline handles the flow: client audio (PCM) is processed by a Silero
 ### Engine Core (`engine/main.py`)
 
 This module sets up the core FastAPI application and orchestrates the entire real-time voice pipeline:
-*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the STT service, sends the transcript to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client. It also manages mic state, sending a `listening_stop` signal to the client when a valid utterance is detected to prevent mic input during AI processing.
+*   **`/ws` (WebSocket):** Implements the full voice pipeline. It handles client audio (PCM) processing via VAD, denoising, checks for silence timeouts, feeds speech segments to the external STT service, sends the transcript to the LLM for text generation, forwards the resulting text to a TTS service, and streams the synthesized audio chunks back to the client. It also manages mic state, sending a `listening_stop` signal to the client when a valid utterance is detected to prevent mic input during AI processing.
 *   **Audio Utilities:** Provides core functions for VAD iteration, PCM encoding to WAV format, and TTS audio forwarding.
 *   **VAD Integration:** The Silero VAD model is loaded once at startup and shared across all connections, providing speech boundary detection.
 
 ### Inference Engine (`engine/inference.py`)
 
 This module manages the interaction with the LLM and TTS services, handling the complex streaming logic:
+*   **STT Interaction:** Audio segments are sent to an external `whisper-server` via multipart/form-data for transcription. The system is configured to use a specific language (e.g., Italian) for faster processing, bypassing automatic language detection.
 *   **LLM Streaming:** Implements the logic to transcribe incoming audio via STT, then stream responses from the LLM. It processes the transcript, sends it to the LLM endpoint, and uses the TTS service to synthesize and forward text chunks to the client in real-time.
 *   **System Prompt:** Defines the behavior of the LLM, instructing it to accept and respond in either Italian or English.
 
