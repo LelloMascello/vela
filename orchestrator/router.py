@@ -23,10 +23,34 @@ MAIN_WS_HOST    = "127.0.0.1"
 MAIN_WS_PORT    = 8002
 
 
+# How many frames to consume from the client without forwarding to the detector
+# at the start of each new session.  This flushes any audio that accumulated
+# in the client buffer during the reconnection window AND gives the detector's
+# own internal sliding-window time to drain stale speech from a previous
+# session before we start evaluating wake-word scores.
+# At 16 kHz / 512 samples per frame → ~320 ms of warm-up.
+DETECTOR_WARMUP_FRAMES = 10
+
+
 async def _fetch_frame_length(client: httpx.AsyncClient) -> int:
     resp = await client.get(f"{DETECTOR_URL}/config", timeout=5.0)
     resp.raise_for_status()
     return resp.json()["frame_length"]
+
+
+async def _reset_detector(client: httpx.AsyncClient) -> None:
+    """Ask the detector to clear its internal state (best-effort).
+
+    Not all detector implementations expose a /reset endpoint; if the call
+    fails for any reason we log and continue — the WARMUP_FRAMES skip below
+    acts as a secondary safeguard.
+    """
+    try:
+        resp = await client.post(f"{DETECTOR_URL}/reset", timeout=5.0)
+        resp.raise_for_status()
+    except Exception as exc:
+        # Non-fatal: detector may not implement /reset.
+        print(f"[router] detector /reset skipped or failed: {exc}")
 
 
 @app.post("/auth")
@@ -64,8 +88,14 @@ async def websocket_endpoint(
             await websocket.close(code=1011, reason=f"Detector unreachable: {exc}")
             return
 
+        # Reset the detector's internal sliding-window state so that audio
+        # buffered from a previous session cannot trigger an immediate false
+        # wake-word hit on the very first frame of this new session.
+        await _reset_detector(client)
+
         frame_bytes = frame_length * 2  # each int16 sample = 2 bytes
         byte_buffer = bytearray()
+        frames_processed = 0  # counts frames forwarded to the detector
 
         try:
             while True:
@@ -75,6 +105,8 @@ async def websocket_endpoint(
                 while len(byte_buffer) >= frame_bytes:
                     frame = byte_buffer[:frame_bytes]
                     del byte_buffer[:frame_bytes]
+
+                    frames_processed += 1
 
                     # Convert int16 bytes → float32 in [-1.0, 1.0]
                     pcm_int16 = np.frombuffer(frame, dtype=np.int16)
@@ -94,6 +126,14 @@ async def websocket_endpoint(
                         continue
                     except httpx.RequestError as exc:
                         await websocket.send_json({"error": f"Detector unreachable: {exc}"})
+                        continue
+
+                    # Warm-up: forward frames to the detector so its mel-feature
+                    # and score-history buffers fill with fresh audio, but suppress
+                    # the wake-word result.  Simply skipping frames (without
+                    # posting them) leaves stale mel features in the model and
+                    # does not fix false positives.
+                    if frames_processed <= DETECTOR_WARMUP_FRAMES:
                         continue
 
                     result = resp.json()

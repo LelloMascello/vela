@@ -418,6 +418,7 @@ function connectRouterWs(url) {
     phase        = 'router';
     currentFrame = parseInt(document.getElementById('router-frame').value) || 1280;
     pcmBuffer    = new Float32Array(0);
+    micMuted     = false;   // safe to open mic now — buffer is clean and WS is ready
     document.getElementById('ft-frame').textContent = currentFrame;
     setStatus('router pulse', 'router ws');
     setPhaseSteps('router');
@@ -571,6 +572,10 @@ function switchToMain(ip, port, username) {
 function switchToRouter() {
   stopSilenceTimer();
   clearAudioQueue();
+  // Keep the mic muted until the router WebSocket is open and ready.
+  // clearAudioQueue() resets micMuted to false; re-mute here so that no
+  // stale audio accumulates in pcmBuffer during the reconnection window.
+  micMuted = true;
   if (wsMain && wsMain.readyState === WebSocket.OPEN) wsMain.close(1000, 'silence timeout');
   wsMain = null;
 
