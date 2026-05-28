@@ -1,0 +1,15 @@
+<resources>
+    <!--
+        Base theme for the Activity window.
+        AppCompat.DayNight.NoActionBar is the standard base for Compose apps:
+        it removes the window title/action bar so Compose's Scaffold owns
+        the entire surface, and gives correct edge-to-edge inset support.
+    -->
+    <style name="Theme.FlowAI" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">#020209</item>
+        <item name="android:statusBarColor">#020209</item>
+        <item name="android:navigationBarColor">#020209</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

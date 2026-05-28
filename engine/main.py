@@ -193,7 +193,7 @@ async def voice_pipeline(
                 conversation_history.append({"role": "assistant", "content": full_text})
                 log.debug("History length: %d messages", len(conversation_history))
 
-                await websocket.send_json({"type": "done", "full_text": full_text})
+                await websocket.send_json({"type": "done", "full_text": full_text, "transcript": transcript})
                 log.info("Turn #%d complete", turns_handled)
 
                 silence_start = None

@@ -290,10 +290,13 @@ async function loadChats() {
     const res = await fetch(`/chats/select?username=${encodeURIComponent(_username)}`);
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     
-    // Format all chats first
     const rawChats = await res.json();
-    allChats       = rawChats.map(c => ({ chat: c, score: 1 }));
-    filteredChats  = [...allChats];
+    
+    // Store raw documents for searching
+    allChats       = rawChats; 
+    
+    // Wrap them with scores for the initial UI render
+    filteredChats  = allChats.map(c => ({ chat: c, score: 1 }));
 
     // Initial render and set up infinite scroll observer
     renderChats(true, '');
