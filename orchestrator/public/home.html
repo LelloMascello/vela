@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Home</title>
-  <link rel="stylesheet" href="/public/style.css?v=2">
+  <title>Jarvis.ai — Home</title>
+  <link rel="stylesheet" href="/public/style.css">
 </head>
-<body>
+<body class="home-page">
 
 <!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
-  <div class="logo">flow<span>.</span>ai</div>
+  <div class="logo">Jarvis<span>.</span>ai</div>
 
   <nav class="main-nav">
     <a href="/home" class="nav-link active">Home</a>
@@ -18,11 +18,11 @@
   </nav>
 
   <div class="phase-bar">
-    <div class="phase-step active" id="ps-router" data-phase="router">
+    <div class="phase-step active" id="ps-router">
       <div class="num">1</div> Wake Word
     </div>
     <div class="phase-arrow">›</div>
-    <div class="phase-step" id="ps-main" data-phase="main">
+    <div class="phase-step" id="ps-main">
       <div class="num">2</div> AI Voice
     </div>
   </div>
@@ -55,18 +55,16 @@
         <input type="number" id="router-frame" value="1280">
       </div>
       <button class="btn btn-primary" id="connect-btn" onclick="connect()">Connect &amp; Start</button>
-      <div style="margin-top:0.6rem">
-        <button class="btn btn-danger" id="disconnect-btn" onclick="disconnect()" style="display:none">Disconnect</button>
-      </div>
+      <button class="btn btn-danger" id="disconnect-btn" onclick="disconnect()" style="display:none">Disconnect</button>
     </div>
 
     <!-- Waveform -->
     <div class="waveform-wrap">
-      <div class="section-label" style="padding:0;margin-bottom:0.7rem">Microphone</div>
+      <div class="section-label" style="padding:0;margin-bottom:0.7rem;border-bottom:none">Microphone</div>
       <canvas id="waveform"></canvas>
     </div>
 
-    <!-- Wake Word panel (phase: router) -->
+    <!-- Wake Word panel 
     <div class="panel-section" id="ww-panel">
       <div class="section-label">Wake Word Score</div>
       <div class="score-display">
@@ -84,9 +82,9 @@
         <div class="detection-label" id="detect-label">Listening…</div>
         <div class="detect-count" id="detect-count">0</div>
       </div>
-    </div>
+    </div> -->
 
-    <!-- AI Session panel (phase: main) -->
+    <!-- AI Session panel -->
     <div class="panel-section" id="ai-panel" style="display:none">
       <div class="section-label">Silence Timer</div>
       <div class="silence-timer-wrap">
@@ -122,15 +120,25 @@
 
   </div>
 
-  <!-- RIGHT PANEL: conversation only -->
+  <!-- RIGHT PANEL -->
   <div class="right-panel" id="right-panel">
+
+    <!-- Idle placeholder -->
+    <div class="right-panel-idle" id="idle-placeholder">
+      <div class="idle-icon">🎙</div>
+      <div class="idle-title">Ready when you are</div>
+      <div class="idle-sub">Connect and say the wake word to start a session.</div>
+    </div>
+
+    <!-- Conversation panel -->
     <div id="convo-panel">
       <div class="panel-header">
-        <span class="panel-header-label">Conversation</span>
+        <span class="panel-header-label">Live Session</span>
         <button class="clear-btn" onclick="clearConvo()">Clear</button>
       </div>
       <div id="convo"></div>
     </div>
+
   </div>
 
 </main>

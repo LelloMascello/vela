@@ -3,14 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chats</title>
-  <link rel="stylesheet" href="/public/style.css?v2">
+  <title>Jarvis.ai — Chats</title>
+  <link rel="stylesheet" href="/public/style.css">
+  <style>
+    /* Ensure expanded chat threads take up all necessary space */
+    .chat-card.expanded .chat-thread {
+      max-height: none !important;
+      height: auto !important;
+      overflow: visible !important;
+    }
+  </style>
 </head>
-<body>
+<body class="chats-page-body">
 
-<!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <header>
-  <div class="logo">flow<span>.</span>ai</div>
+  <div class="logo">Jarvis<span>.</span>ai</div>
 
   <nav class="main-nav">
     <a href="/home" class="nav-link">Home</a>
@@ -23,17 +30,15 @@
   </div>
 </header>
 
-<!-- ── Chats page ──────────────────────────────────────────────────────────── -->
-<div class="chats-page">
+<div class="chats-layout">
 
   <div class="chats-toolbar">
     <div class="search-wrap">
-      <span class="search-icon">⌕</span>
       <input
         type="text"
         id="search-input"
         class="search-input"
-        placeholder="Search chats…"
+        placeholder="Search sessions…"
         oninput="onSearch()"
         autocomplete="off"
       >
@@ -43,10 +48,13 @@
   </div>
 
   <div id="chats-list" class="chats-list">
-    <div class="chats-empty" id="chats-loading">
-      <span class="empty-icon">⏳</span>
-      <p>Loading chats…</p>
+    <div id="chats-list-content">
+      <div class="chats-empty" id="chats-loading">
+        <span class="empty-icon">⏳</span>
+        <p>Loading sessions…</p>
+      </div>
     </div>
+    <div id="scroll-sentinel" style="height: 1px; margin-top: 20px;"></div>
   </div>
 
 </div>

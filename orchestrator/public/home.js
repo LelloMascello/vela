@@ -1,12 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  AUTH GUARD — redirect to login if session missing
+//  AUTH GUARD
 // ═══════════════════════════════════════════════════════════════════════════
 
 const _username = sessionStorage.getItem('username');
 const _password = sessionStorage.getItem('password');
-if (!_username || !_password) {
-  window.location.href = '/';
-}
+if (!_username || !_password) window.location.href = '/';
 
 document.getElementById('header-username').textContent = _username || '';
 
@@ -17,13 +15,17 @@ function logout() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  STATE
+//  CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SAMPLE_RATE        = 16_000;
-const MAIN_FRAME_LENGTH  = 512;
-const TIMER_CIRC         = 201.1;
-const SILENCE_TIMEOUT_S  = 10;
+const SAMPLE_RATE       = 16_000;
+const MAIN_FRAME_LENGTH = 512;
+const TIMER_CIRC        = 201.1;
+const SILENCE_TIMEOUT_S = 10;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════════════════
 
 let phase          = 'idle';
 let wsRouter       = null;
@@ -46,12 +48,15 @@ let timerInterval  = null;
 let timerLeft      = SILENCE_TIMEOUT_S;
 let timerFrozen    = false;
 
-const audioQueue   = [];
-let audioPlaying   = false;
-let micMuted       = false;   // true while AI audio is playing — mic captured but not sent
-let pendingDoneActions = false; // true when 'done' arrived but audio is still draining
+const audioQueue         = [];
+let audioPlaying         = false;
+let micMuted             = false;
+let pendingDoneActions   = false;
 
-let currentBubble  = null;
+// Tracks the current in-progress turn's user bubble (so we can fill it with
+// the transcript once we receive it) and the AI bubble.
+let pendingUserBubble    = null;
+let currentAiBubble      = null;
 
 const waveCanvas   = document.getElementById('waveform');
 const wCtx         = waveCanvas.getContext('2d');
@@ -64,7 +69,7 @@ let   waveActive   = false;
 // ═══════════════════════════════════════════════════════════════════════════
 
 function setStatus(cls, text) {
-  document.getElementById('dot').className          = 'status-dot ' + cls;
+  document.getElementById('dot').className           = 'status-dot ' + cls;
   document.getElementById('status-text').textContent = text;
 }
 
@@ -74,7 +79,7 @@ function setPhaseSteps(active) {
   order.forEach((p, i) => {
     const el = document.getElementById('ps-' + p);
     if (!el) return;
-    if (i < ai)        el.className = 'phase-step done';
+    if      (i < ai)  el.className = 'phase-step done';
     else if (i === ai) el.className = 'phase-step active';
     else               el.className = 'phase-step';
   });
@@ -85,14 +90,14 @@ function showRouterUI() {
   document.getElementById('ww-panel').style.display = '';
   document.getElementById('ai-panel').style.display = 'none';
   document.getElementById('convo-panel').classList.remove('visible');
-  document.getElementById('right-panel').classList.remove('has-convo');
+  document.getElementById('idle-placeholder').classList.remove('hidden');
 }
 
 function showMainUI() {
   document.getElementById('ww-panel').style.display = 'none';
   document.getElementById('ai-panel').style.display = '';
   document.getElementById('convo-panel').classList.add('visible');
-  document.getElementById('right-panel').classList.add('has-convo');
+  document.getElementById('idle-placeholder').classList.add('hidden');
 }
 
 function setScore(name, score) {
@@ -106,7 +111,7 @@ function setScore(name, score) {
 function flashDetection() {
   detectCount++;
   document.getElementById('detect-count').textContent = detectCount;
-  document.getElementById('st-det').textContent       = detectCount;
+  document.getElementById('st-det').textContent        = detectCount;
   const badge = document.getElementById('detect-badge');
   badge.className = 'detection-badge active';
   document.getElementById('detect-label').textContent = 'DETECTED!';
@@ -120,10 +125,11 @@ function setAiState(state) {
   const badge = document.getElementById('ai-state-badge');
   const text  = document.getElementById('ai-state-text');
   badge.className = 'ai-state-badge';
-  if (state === 'listening')     { badge.classList.add('listening'); text.textContent = 'listening…'; }
-  else if (state === 'speaking') { badge.classList.add('speaking');  text.textContent = 'AI speaking…'; }
-  else if (state === 'timeout')  { text.textContent = 'silence timeout — reconnecting…'; }
-  else                           { text.textContent = 'waiting for speech…'; }
+  if      (state === 'listening') { badge.classList.add('listening'); text.textContent = 'listening…'; }
+  else if (state === 'speaking')  { badge.classList.add('speaking');  text.textContent = 'AI speaking…'; }
+  else if (state === 'thinking')  { badge.classList.add('speaking');  text.textContent = 'thinking…'; }
+  else if (state === 'timeout')   {                                    text.textContent = 'silence timeout — reconnecting…'; }
+  else                             {                                    text.textContent = 'waiting for speech…'; }
 }
 
 // ── Silence countdown ring ────────────────────────────────────────────────
@@ -158,60 +164,88 @@ function updateTimerRing() {
   const offset = TIMER_CIRC * (1 - frac);
   const ring   = document.getElementById('timer-ring');
   ring.style.strokeDashoffset = offset;
-  const stroke = frac > 0.5  ? 'var(--accent)'
-               : frac > 0.25 ? 'var(--amber)'
-               :               'var(--red)';
-  ring.style.stroke = stroke;
+  ring.style.stroke = frac > 0.5 ? 'var(--accent)' : frac > 0.25 ? 'var(--amber)' : 'var(--red)';
   document.getElementById('timer-seconds').textContent = Math.ceil(timerLeft);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  CONVERSATION BUBBLES
+//  Each turn consists of:
+//    • a user .turn element (role label + bubble)
+//    • an AI  .turn element (role label + bubble)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function addUserBubble() {
+function addUserTurn() {
   const convo = document.getElementById('convo');
-  const el    = document.createElement('div');
-  el.className = 'bubble user';
-  el.innerHTML = '<span>🎙</span><span>spoken</span>';
-  convo.appendChild(el);
+
+  const turn  = document.createElement('div');
+  turn.className = 'turn user-turn';
+
+  const role  = document.createElement('div');
+  role.className   = 'bubble-role';
+  role.textContent = 'You';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble user pending';
+  bubble.textContent = 'Speaking…';
+
+  turn.appendChild(role);
+  turn.appendChild(bubble);
+  convo.appendChild(turn);
   convo.scrollTop = convo.scrollHeight;
+
+  // Save reference so we can fill in the transcript later.
+  pendingUserBubble = bubble;
+  return bubble;
 }
 
-function startAiBubble() {
+function fillTranscript(text) {
+  if (!pendingUserBubble) return;
+  pendingUserBubble.classList.remove('pending');
+  pendingUserBubble.textContent = text || '(no transcript)';
+  pendingUserBubble = null;
+  document.getElementById('convo').scrollTop = 9999;
+}
+
+function startAiTurn() {
   const convo = document.getElementById('convo');
-  const wrap  = document.createElement('div');
-  wrap.style.alignSelf = 'flex-start';
-  wrap.style.width = '85%';
-  const meta  = document.createElement('div');
-  meta.className   = 'bubble-meta';
-  meta.textContent = 'AI';
-  const el    = document.createElement('div');
-  el.className = 'bubble ai streaming';
-  wrap.appendChild(meta);
-  wrap.appendChild(el);
-  convo.appendChild(wrap);
+
+  const turn  = document.createElement('div');
+  turn.className = 'turn ai-turn';
+
+  const role  = document.createElement('div');
+  role.className   = 'bubble-role';
+  role.textContent = 'flow.ai';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble ai streaming';
+
+  turn.appendChild(role);
+  turn.appendChild(bubble);
+  convo.appendChild(turn);
   convo.scrollTop = convo.scrollHeight;
-  currentBubble = el;
-  return el;
+
+  currentAiBubble = bubble;
+  return bubble;
 }
 
 function appendAiBubbleText(text) {
-  if (!currentBubble) startAiBubble();
-  currentBubble.textContent = currentBubble.textContent.replace(/▌$/, '') + text;
+  if (!currentAiBubble) startAiTurn();
+  currentAiBubble.textContent = currentAiBubble.textContent + text;
   document.getElementById('convo').scrollTop = 9999;
 }
 
 function finaliseAiBubble(fullText) {
-  if (!currentBubble) return;
-  currentBubble.textContent = fullText;
-  currentBubble.className   = 'bubble ai';
-  currentBubble = null;
+  if (!currentAiBubble) return;
+  currentAiBubble.textContent = fullText;
+  currentAiBubble.classList.remove('streaming');
+  currentAiBubble = null;
 }
 
 function clearConvo() {
   document.getElementById('convo').innerHTML = '';
-  currentBubble = null;
+  pendingUserBubble = null;
+  currentAiBubble   = null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -226,44 +260,31 @@ function enqueueAudio(b64wav) {
 async function drainAudioQueue() {
   if (!audioQueue.length) {
     audioPlaying = false;
-    // Last audio chunk finished — now it's safe to unmute and start the silence timer.
     if (pendingDoneActions) {
       pendingDoneActions = false;
       micMuted  = false;
-      pcmBuffer = new Float32Array(0); // discard anything captured while muted
+      pcmBuffer = new Float32Array(0);
       unfreezeTimer();
       resetSilenceTimer();
       setAiState('waiting');
-      // Notify the server that the mic is open again so it can start counting
-      // silence from this exact moment — not from when "done" was sent, which
-      // could be several seconds earlier while TTS was still playing.
       if (wsMain && wsMain.readyState === WebSocket.OPEN) {
         wsMain.send(JSON.stringify({ type: 'mic_open' }));
       }
     }
     return;
   }
-  if (!audioCtx)          { audioPlaying = false; audioQueue.length = 0; return; }
 
+  if (!audioCtx) { audioPlaying = false; audioQueue.length = 0; return; }
   audioPlaying = true;
   const b64 = audioQueue.shift();
 
   try {
-    // Resume the AudioContext if the browser suspended it (tab focus loss,
-    // autoplay policy). decodeAudioData works while suspended but start()
-    // is a no-op until the context is running.
     if (audioCtx.state === 'suspended') await audioCtx.resume();
-
     const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
     const buf   = await audioCtx.decodeAudioData(bytes.buffer);
-
-    // Guard: context may have been closed while we awaited decode.
     if (!audioCtx || audioCtx.state === 'closed') {
-      audioPlaying = false;
-      audioQueue.length = 0;
-      return;
+      audioPlaying = false; audioQueue.length = 0; return;
     }
-
     const src  = audioCtx.createBufferSource();
     src.buffer = buf;
     src.connect(audioCtx.destination);
@@ -271,15 +292,15 @@ async function drainAudioQueue() {
     src.start();
   } catch (e) {
     console.error('TTS playback error:', e.message);
-    drainAudioQueue();   // skip broken chunk, play next
+    drainAudioQueue();
   }
 }
 
 function clearAudioQueue() {
-  audioQueue.length    = 0;
-  audioPlaying         = false;
-  micMuted             = false;
-  pendingDoneActions   = false;
+  audioQueue.length  = 0;
+  audioPlaying       = false;
+  micMuted           = false;
+  pendingDoneActions = false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -287,16 +308,19 @@ function clearAudioQueue() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function drawWave() {
-  const w = waveCanvas.offsetWidth || 260;
+  const w = waveCanvas.offsetWidth || 240;
   waveCanvas.width = w; waveCanvas.height = 50;
   wCtx.clearRect(0, 0, w, 50);
+
   const sliceW = w / waveData.length;
   wCtx.beginPath();
-  const col = phase === 'main'   ? '#a78bfa'
-            : phase === 'router' ? '#4f8ef7'
-            : '#3a3a4a';
-  wCtx.strokeStyle = waveActive ? col : '#2a2a3a';
+
+  const col = phase === 'main'   ? 'rgba(129,140,248,0.9)'
+            : phase === 'router' ? 'rgba(56,189,248,0.9)'
+            :                      'rgba(71,85,105,0.6)';
+  wCtx.strokeStyle = waveActive ? col : 'rgba(71,85,105,0.3)';
   wCtx.lineWidth   = 1.5;
+
   for (let i = 0; i < waveData.length; i++) {
     const x = i * sliceW;
     const y = 25 + waveData[(wavePos + i) % waveData.length] * 22;
@@ -324,8 +348,6 @@ function downsample(buf, from, to) {
 }
 
 function pushSamples(samples) {
-  // While the mic is muted (user turn ended, AI processing/speaking),
-  // discard everything — don't update the waveform, don't buffer, don't send.
   if (micMuted) return;
 
   for (let i = 0; i < samples.length; i++) {
@@ -373,11 +395,12 @@ async function startMic() {
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, sampleRate: { ideal: 16000 },
              echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    video: false
+    video: false,
   });
 
   const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
   const url  = URL.createObjectURL(blob);
+
   try {
     await audioCtx.audioWorklet.addModule(url);
     URL.revokeObjectURL(url);
@@ -387,11 +410,12 @@ async function startMic() {
     src.connect(workletNode);
     const sink = audioCtx.createGain(); sink.gain.value = 0;
     workletNode.connect(sink); sink.connect(audioCtx.destination);
-  } catch (e) {
+  } catch (_) {
     URL.revokeObjectURL(url);
     const src = audioCtx.createMediaStreamSource(micStream);
     const sp  = audioCtx.createScriptProcessor(4096, 1, 1);
-    sp.onaudioprocess = ev => pushSamples(downsample(new Float32Array(ev.inputBuffer.getChannelData(0)), nativeRate, SAMPLE_RATE));
+    sp.onaudioprocess = ev =>
+      pushSamples(downsample(new Float32Array(ev.inputBuffer.getChannelData(0)), nativeRate, SAMPLE_RATE));
     src.connect(sp);
     const sink = audioCtx.createGain(); sink.gain.value = 0;
     sp.connect(sink); sink.connect(audioCtx.destination);
@@ -418,7 +442,7 @@ function connectRouterWs(url) {
     phase        = 'router';
     currentFrame = parseInt(document.getElementById('router-frame').value) || 1280;
     pcmBuffer    = new Float32Array(0);
-    micMuted     = false;   // safe to open mic now — buffer is clean and WS is ready
+    micMuted     = false;
     document.getElementById('ft-frame').textContent = currentFrame;
     setStatus('router pulse', 'router ws');
     setPhaseSteps('router');
@@ -471,6 +495,9 @@ function switchToMain(ip, port, username) {
   const url  = `ws://${ip}:${port}/ws?username=${user}`;
   document.getElementById('ft-main').textContent = `${ip}:${port}`;
 
+  // Clear the conversation panel for this fresh session.
+  clearConvo();
+
   wsMain = new WebSocket(url);
   wsMain.binaryType = 'arraybuffer';
 
@@ -482,7 +509,7 @@ function switchToMain(ip, port, username) {
     setStatus('main pulse', 'main ws');
     setPhaseSteps('main');
     showMainUI();
-    setAiState('waiting');
+    setAiState('listening');
     startSilenceTimer();
   };
 
@@ -497,29 +524,30 @@ function switchToMain(ip, port, username) {
       return;
     }
 
+    // ── User finished speaking — show a pending user bubble ──────────────
     if (data.type === 'listening_stop') {
-      // VAD has confirmed the user's turn is complete and processing has begun.
-      // Freeze the waveform and stop sending mic audio immediately — before
-      // the first TTS chunk arrives — so there is no gap where the mic stays
-      // live while the LLM is thinking.
       micMuted   = true;
       waveActive = false;
-      pcmBuffer  = new Float32Array(0);   // discard any in-flight buffered audio
+      pcmBuffer  = new Float32Array(0);
+      // Create the user bubble immediately (in pending state) so the turn
+      // order is preserved visually.
+      addUserTurn();
+      setAiState('thinking');
       return;
     }
 
+    // ── TTS starting — create the AI bubble ──────────────────────────────
     if (data.type === 'tts_start') {
       turnCount++;
       document.getElementById('st-turns').textContent = turnCount;
-      addUserBubble();
-      startAiBubble();
-      // micMuted / waveActive already set by 'listening_stop' above.
-      pendingDoneActions = false;  // clear any stale flag from a previous turn
+      startAiTurn();
+      pendingDoneActions = false;
       freezeTimer();
       setAiState('speaking');
       return;
     }
 
+    // ── Streaming text + audio chunk ─────────────────────────────────────
     if (data.type === 'chunk') {
       if (data.text)  appendAiBubbleText(data.text);
       if (data.audio) enqueueAudio(data.audio);
@@ -528,19 +556,24 @@ function switchToMain(ip, port, username) {
 
     if (data.type === 'tts_end') return;
 
+    // ── Turn complete: fill transcript + finalise AI bubble ──────────────
     if (data.type === 'done') {
       finaliseAiBubble(data.full_text || '');
+      // Fill in the transcript if the server sent it (add transcript field to
+      // main.py's "done" message), or fall back to a generic label.
+      fillTranscript(data.transcript || null);
+
       if (audioPlaying || audioQueue.length) {
-        // Audio is still playing — drainAudioQueue() will handle unmute + timer
-        // once the last chunk finishes.
         pendingDoneActions = true;
       } else {
-        // No audio was queued (e.g. TTS was skipped) — act immediately.
         micMuted  = false;
         pcmBuffer = new Float32Array(0);
         unfreezeTimer();
         resetSilenceTimer();
         setAiState('waiting');
+        if (wsMain && wsMain.readyState === WebSocket.OPEN) {
+          wsMain.send(JSON.stringify({ type: 'mic_open' }));
+        }
       }
       return;
     }
@@ -555,6 +588,8 @@ function switchToMain(ip, port, username) {
     document.getElementById('ft-main').textContent = 'closed';
     clearAudioQueue();
     stopSilenceTimer();
+    // Reset conversation for next session that comes through the router.
+    clearConvo();
   };
 
   wsMain.onerror = () => {
@@ -572,9 +607,6 @@ function switchToMain(ip, port, username) {
 function switchToRouter() {
   stopSilenceTimer();
   clearAudioQueue();
-  // Keep the mic muted until the router WebSocket is open and ready.
-  // clearAudioQueue() resets micMuted to false; re-mute here so that no
-  // stale audio accumulates in pcmBuffer during the reconnection window.
   micMuted = true;
   if (wsMain && wsMain.readyState === WebSocket.OPEN) wsMain.close(1000, 'silence timeout');
   wsMain = null;
@@ -583,12 +615,16 @@ function switchToRouter() {
   document.getElementById('st-reconnects').textContent = reconnectCount;
   setScore('—', 0);
 
+  // Clear the live conversation view when returning to router (silence timeout
+  // means the session ended and was persisted by the backend).
+  clearConvo();
+
   if (!routerWsUrl) { cleanup(); return; }
   connectRouterWs(routerWsUrl);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CONNECT (entry point)
+//  CONNECT
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function connect() {
@@ -596,12 +632,8 @@ async function connect() {
   const username = _username;
   const password = _password;
 
-  try {
-    audioCtx = new AudioContext();
-  } catch (e) {
-    console.error('AudioContext failed:', e.message);
-    return;
-  }
+  try { audioCtx = new AudioContext(); }
+  catch (e) { console.error('AudioContext failed:', e.message); return; }
 
   document.getElementById('connect-btn').disabled = true;
   setStatus('pulse', 'authenticating…');
@@ -609,8 +641,8 @@ async function connect() {
   let wsUrl;
   try {
     const resp = await fetch(`http://${host}/auth`, {
-      method: 'POST',
-      headers: { 'Authorization': 'Basic ' + btoa(username + ':' + password) }
+      method:  'POST',
+      headers: { 'Authorization': 'Basic ' + btoa(username + ':' + password) },
     });
     if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
     const data = await resp.json();
@@ -625,9 +657,8 @@ async function connect() {
 
   routerWsUrl = wsUrl;
 
-  try {
-    await startMic();
-  } catch (e) {
+  try { await startMic(); }
+  catch (e) {
     console.error('Mic error:', e.message);
     document.getElementById('connect-btn').disabled = false;
     audioCtx.close(); audioCtx = null;
@@ -635,7 +666,7 @@ async function connect() {
   }
 
   document.getElementById('connect-btn').style.display    = 'none';
-  document.getElementById('disconnect-btn').style.display = 'block';
+  document.getElementById('disconnect-btn').style.display = '';
 
   connectRouterWs(wsUrl);
 }
@@ -658,11 +689,13 @@ function cleanup() {
   waveActive  = false;
   routerWsUrl = null;
   pcmBuffer   = new Float32Array(0);
+  // Reset conversation view on full disconnect.
+  clearConvo();
   setStatus('', 'disconnected');
   setPhaseSteps('router');
   showRouterUI();
   document.getElementById('connect-btn').disabled          = false;
-  document.getElementById('connect-btn').style.display    = 'block';
+  document.getElementById('connect-btn').style.display    = '';
   document.getElementById('disconnect-btn').style.display = 'none';
   document.getElementById('ft-router').textContent = '—';
   document.getElementById('ft-main').textContent   = '—';

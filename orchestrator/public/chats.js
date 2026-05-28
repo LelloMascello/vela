@@ -14,48 +14,53 @@ function logout() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  DATA
+//  DATA & PAGINATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-let allChats      = [];   // raw session docs from server
-let filteredChats = [];   // after fuzzy search
+let allChats      = [];
+let filteredChats = [];
+let currentPage   = 1;
+const PAGE_SIZE   = 15;
+let observer      = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  DATA HELPERS
-//
-//  Each document from /chats/select looks like:
-//    { _id, username, created_at (unix ms), chat: [{role, content}, …] }
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Return the first assistant message in a session, or a fallback string.
- */
 function sessionTitle(doc) {
   const msgs = doc.chat || [];
-  const first = msgs.find(m => m.role === 'assistant');
-  if (first && first.content) return first.content.slice(0, 60) + (first.content.length > 60 ? '…' : '');
+  const first = msgs.find(m => m.role === 'user');
+  if (first && first.content) {
+    const text = first.content.trim();
+    return text.length > 70 ? text.slice(0, 70) + '…' : text;
+  }
   return 'Voice session';
 }
 
-/**
- * Return the last meaningful message text for the preview line.
- */
 function previewText(doc) {
   const msgs = doc.chat || [];
   if (!msgs.length) return 'No messages';
   const last = msgs[msgs.length - 1];
-  const text = last.content || '';
-  return text.slice(0, 140) || 'No messages';
+  const text = (last.content || '').trim();
+  return text.length > 120 ? text.slice(0, 120) + '…' : text || 'No messages';
 }
 
-/**
- * Build a single searchable string from a session document.
- */
 function chatToSearchString(doc) {
   const parts = [];
   if (doc.username) parts.push(doc.username);
   (doc.chat || []).forEach(m => { if (m.content) parts.push(m.content); });
   return parts.join(' ');
+}
+
+function formatDate(doc) {
+  const raw = doc.created_at;
+  if (!raw) return '';
+  const ms = (typeof raw === 'object' && raw.$date) ? raw.$date : raw;
+  const d  = new Date(ms);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    + ' · '
+    + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -69,11 +74,7 @@ function fuzzyScore(text, pattern) {
 
   if (text.includes(pattern)) return 1000 - text.indexOf(pattern);
 
-  let score      = 0;
-  let pi         = 0;
-  let consecutive = 0;
-  let lastMatch  = -1;
-
+  let score = 0, pi = 0, consecutive = 0, lastMatch = -1;
   for (let ti = 0; ti < text.length && pi < pattern.length; ti++) {
     if (text[ti] === pattern[pi]) {
       consecutive++;
@@ -85,7 +86,6 @@ function fuzzyScore(text, pattern) {
       consecutive = 0;
     }
   }
-
   return pi === pattern.length ? score : 0;
 }
 
@@ -98,8 +98,15 @@ function fuzzyFilter(chats, query) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  HIGHLIGHT  — wrap matched characters in <mark>
+//  HIGHLIGHT
 // ═══════════════════════════════════════════════════════════════════════════
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 function highlight(text, pattern) {
   if (!pattern) return escHtml(text);
@@ -113,8 +120,7 @@ function highlight(text, pattern) {
       + escHtml(text.slice(idx + pat.length));
   }
 
-  let result = '';
-  let pi = 0;
+  let result = '', pi = 0;
   for (let ti = 0; ti < text.length; ti++) {
     if (pi < pat.length && lower[ti] === pat[pi]) {
       result += '<mark>' + escHtml(text[ti]) + '</mark>';
@@ -126,75 +132,147 @@ function highlight(text, pattern) {
   return result;
 }
 
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+// ═══════════════════════════════════════════════════════════════════════════
+//  BUILD CHAT THREAD HTML
+// ═══════════════════════════════════════════════════════════════════════════
+
+function buildThreadHtml(doc, query) {
+  const msgs = doc.chat || [];
+  if (!msgs.length) {
+    return '<div class="chats-empty" style="padding:1rem"><p>No messages in this session.</p></div>';
+  }
+
+  let html = '';
+  for (const msg of msgs) {
+    const isUser = msg.role === 'user';
+    const role   = isUser ? 'You' : 'flow.ai';
+    const cls    = isUser ? 'user-msg' : 'ai-msg';
+    const text   = (msg.content || '').trim();
+    if (!text) continue;
+
+    html += `
+      <div class="thread-turn">
+        <div class="thread-role">${escHtml(role)}</div>
+        <div class="thread-bubble ${cls}">${highlight(text, query)}</div>
+      </div>`;
+  }
+  return html || '<div class="chats-empty" style="padding:1rem"><p>No messages in this session.</p></div>';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  RENDER
+//  RENDER SESSIONS (INFINITE SCROLL)
 // ═══════════════════════════════════════════════════════════════════════════
 
-function formatDate(doc) {
-  // created_at is stored as unix ms by main.py
-  const raw = doc.created_at;
-  if (!raw) return '';
-  // MongoDB BSON date serialised by bson json_util comes as {"$date": ...}
-  const ms  = (typeof raw === 'object' && raw.$date) ? raw.$date : raw;
-  const d   = new Date(ms);
-  if (isNaN(d)) return '';
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-    + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
+function renderChats(reset = true, query = '') {
+  const container = document.getElementById('chats-list-content');
+  const sentinel  = document.getElementById('scroll-sentinel');
 
-function renderChats(results, query) {
-  const list = document.getElementById('chats-list');
+  if (reset) {
+    currentPage = 1;
+    container.innerHTML = '';
+  }
 
-  if (!results.length) {
-    list.innerHTML = `
+  if (!filteredChats.length) {
+    container.innerHTML = `
       <div class="chats-empty">
         <span class="empty-icon">🔍</span>
-        <p>${query ? `No sessions match "<strong>${escHtml(query)}</strong>"` : 'No sessions yet.'}</p>
+        <p>${query
+          ? `No sessions match "<strong>${escHtml(query)}</strong>"`
+          : 'No sessions yet. Start a voice session to see it here.'
+        }</p>
       </div>`;
+    if (sentinel) sentinel.style.display = 'none';
     return;
   }
 
-  list.innerHTML = results.map(({ chat: doc }) => {
-    const title   = sessionTitle(doc);
-    const preview = previewText(doc);
-    const date    = formatDate(doc);
-    const msgs    = doc.chat || [];
-    // Count only assistant turns as "AI replies"
-    const aiCount = msgs.filter(m => m.role === 'assistant').length;
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const endIndex   = startIndex + PAGE_SIZE;
+  const slice      = filteredChats.slice(startIndex, endIndex);
+
+  const html = slice.map(({ chat: doc }, indexOffset) => {
+    const i        = startIndex + indexOffset; // Global index based on current slice
+    const title    = sessionTitle(doc);
+    const preview  = previewText(doc);
+    const date     = formatDate(doc);
+    const msgs     = doc.chat || [];
+    const aiCount  = msgs.filter(m => m.role === 'assistant').length;
+    const threadId = `thread-${i}`;
 
     return `
-      <div class="chat-card">
+      <div class="chat-card" id="card-${i}" onclick="toggleCard(${i})">
         <div class="chat-card-header">
-          <span class="chat-title">${highlight(title, query)}</span>
-          <span class="chat-date">${escHtml(date)}</span>
+          <div class="chat-card-meta">
+            <span class="chat-title">${highlight(title, query)}</span>
+            <span class="chat-preview">${highlight(preview, query)}</span>
+          </div>
+          <div class="chat-card-right">
+            <span class="chat-date">${escHtml(date)}</span>
+            <span class="chat-badge">${aiCount} turn${aiCount !== 1 ? 's' : ''}</span>
+            <span class="expand-icon">▾</span>
+          </div>
         </div>
-        <div class="chat-preview">${highlight(preview, query)}</div>
-        <div class="chat-meta">
-          <span class="chat-turns">${aiCount} AI response${aiCount !== 1 ? 's' : ''}</span>
+        <div class="chat-thread" id="${threadId}">
+          ${buildThreadHtml(doc, query)}
         </div>
       </div>`;
   }).join('');
 
+  if (reset) {
+    container.innerHTML = html;
+  } else {
+    container.insertAdjacentHTML('beforeend', html);
+  }
+
   document.getElementById('chats-count').textContent =
-    results.length + ' of ' + allChats.length + ' session' + (allChats.length !== 1 ? 's' : '');
+    filteredChats.length + ' of ' + allChats.length + ' session' + (allChats.length !== 1 ? 's' : '');
+
+  // Toggle sentinel visibility
+  if (sentinel) {
+    sentinel.style.display = endIndex >= filteredChats.length ? 'none' : 'block';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SEARCH HANDLER
+//  INTERSECTION OBSERVER LOGIC
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setupObserver() {
+  const sentinel = document.getElementById('scroll-sentinel');
+  if (!sentinel) return;
+
+  observer = new IntersectionObserver((entries) => {
+    // If the sentinel scrolls into view and there are still elements left to render
+    if (entries[0].isIntersecting) {
+      if (currentPage * PAGE_SIZE < filteredChats.length) {
+        currentPage++;
+        const currentQuery = document.getElementById('search-input').value;
+        renderChats(false, currentQuery);
+      }
+    }
+  }, { rootMargin: '200px' });
+
+  observer.observe(sentinel);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EXPAND / COLLAPSE
+// ═══════════════════════════════════════════════════════════════════════════
+
+function toggleCard(index) {
+  const card = document.getElementById(`card-${index}`);
+  if (!card) return;
+  card.classList.toggle('expanded');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SEARCH
 // ═══════════════════════════════════════════════════════════════════════════
 
 function onSearch() {
   const query = document.getElementById('search-input').value;
   document.getElementById('search-clear').style.display = query ? 'inline-flex' : 'none';
   filteredChats = fuzzyFilter(allChats, query);
-  renderChats(filteredChats, query);
+  renderChats(true, query);
 }
 
 function clearSearch() {
@@ -204,20 +282,25 @@ function clearSearch() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  LOAD CHATS
+//  LOAD
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function loadChats() {
   try {
     const res = await fetch(`/chats/select?username=${encodeURIComponent(_username)}`);
     if (!res.ok) throw new Error(`Server error ${res.status}`);
-    allChats = await res.json();
-    filteredChats = allChats;
-    document.getElementById('chats-count').textContent =
-      allChats.length + ' session' + (allChats.length !== 1 ? 's' : '');
-    renderChats(filteredChats.map(c => ({ chat: c, score: 1 })), '');
+    
+    // Format all chats first
+    const rawChats = await res.json();
+    allChats       = rawChats.map(c => ({ chat: c, score: 1 }));
+    filteredChats  = [...allChats];
+
+    // Initial render and set up infinite scroll observer
+    renderChats(true, '');
+    setupObserver();
+
   } catch (e) {
-    document.getElementById('chats-list').innerHTML = `
+    document.getElementById('chats-list-content').innerHTML = `
       <div class="chats-empty">
         <span class="empty-icon">⚠️</span>
         <p>Failed to load sessions: ${escHtml(e.message)}</p>
