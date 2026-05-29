@@ -9,4 +9,4 @@
 -keepattributes *Annotation*
 
 # Flow.AI data models
--keep class com.jarvis.app.data.** { *; }
+-keep class com.jarvisai.app.data.** { *; }

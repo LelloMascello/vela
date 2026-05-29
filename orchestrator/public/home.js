@@ -657,9 +657,38 @@ async function connect() {
 
   routerWsUrl = wsUrl;
 
+  setStatus('pulse', 'requesting mic…');
   try { await startMic(); }
   catch (e) {
     console.error('Mic error:', e.message);
+    setStatus('error', 'mic access denied');
+
+    // Browsers block getUserMedia on non-localhost HTTP pages.
+    // On LAN (HTTP) the user must whitelist this origin in their browser:
+    //   Chrome/Edge: chrome://flags/#unsafely-treat-insecure-origin-as-secure
+    //                Add  http://<server-ip>:8000  → Enabled → Relaunch
+    //   Firefox:     about:config → media.devices.insecure.enabled = true
+    const origin = `http://${host}`;
+    const isLikelyMicBlock = e.name === 'NotAllowedError' || e.name === 'SecurityError'
+                          || e.message.toLowerCase().includes('secure');
+
+    if (isLikelyMicBlock) {
+      const msg =
+        `Microphone blocked — browsers only allow mic access on HTTPS or localhost.\n\n` +
+        `Since you're on a local network (HTTP), enable the exception in your browser:\n\n` +
+        `• Chrome / Edge:\n` +
+        `  1. Open:  chrome://flags/#unsafely-treat-insecure-origin-as-secure\n` +
+        `  2. Add:   ${origin}\n` +
+        `  3. Set to "Enabled" → click Relaunch\n\n` +
+        `• Firefox:\n` +
+        `  1. Open:  about:config\n` +
+        `  2. Set:   media.devices.insecure.enabled  →  true\n\n` +
+        `Then reload this page and try again.`;
+      alert(msg);
+    } else {
+      alert(`Microphone error: ${e.message}`);
+    }
+
     document.getElementById('connect-btn').disabled = false;
     audioCtx.close(); audioCtx = null;
     return;

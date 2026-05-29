@@ -5,6 +5,7 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">192.168.178.136</domain>
         <!-- Private LAN ranges — adjust if your server is on a different subnet. -->
         <domain includeSubdomains="true">192.168.0.0/16</domain>
         <domain includeSubdomains="true">10.0.0.0/8</domain>

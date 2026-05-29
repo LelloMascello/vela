@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace  = "com.flowai.app"
+    namespace  = "com.jarvisai.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.flowai.app"
+        applicationId = "com.jarvisai.app"
         minSdk        = 26
         targetSdk     = 35
         versionCode   = 1

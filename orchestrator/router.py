@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 DETECTOR_URL    = "http://localhost:8001"
-MAIN_WS_HOST    = "127.0.0.1"
+MAIN_WS_HOST    = "192.168.178.136"
 MAIN_WS_PORT    = 8002
 
 
@@ -61,8 +61,10 @@ async def authentication(
         )
 
     host = request.headers.get("host", "localhost")
+    # Strip any accidental path component; keep only host:port
+    host = host.split("/")[0]
     return {
-        "ws_url": f"ws://{host}/ws?username={result['username']}",  # fix: username già nell'URL
+        "ws_url": f"ws://{host}/ws?username={result['username']}",
         "username": result["username"],
     }
 

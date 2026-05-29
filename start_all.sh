@@ -40,7 +40,7 @@ fi
 echo "[+] Starting services..."
 
 # 1. Engine - main.py (Port 8002)
-(cd engine && exec .venv/bin/fastapi dev main.py --port 8002) &
+(cd engine && exec .venv/bin/fastapi dev main.py --host 0.0.0.0 --port 8002) &
 PIDS+=($!)
 
 # 2. Engine - text_to_speech.py (Port 8003)
@@ -60,7 +60,7 @@ PIDS+=($!)
 PIDS+=($!)
 
 # 4. Orchestrator - router.py (Port 8000)
-(cd orchestrator && exec .venv/bin/fastapi dev router.py --port 8000) &
+(cd orchestrator && exec .venv/bin/fastapi dev router.py --host 0.0.0.0 --port 8000) &
 PIDS+=($!)
 
 # 5. Orchestrator - wake_word_detector.py (Port 8001)
@@ -68,7 +68,7 @@ PIDS+=($!)
 PIDS+=($!)
 
 # 6. Orchestrator - website.py (Port 8005)
-(cd orchestrator && exec .venv/bin/fastapi dev website.py --port 8005) &
+(cd orchestrator && exec .venv/bin/fastapi dev website.py --host 0.0.0.0 --port 8005) &
 PIDS+=($!)
 
 # 7. llama.cpp server (Port 8080)
