@@ -7,21 +7,26 @@ import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
  * Receives base-64-encoded WAV chunks from the server and plays them one by
- * one in order, mimicking the JS [audioQueue] + [drainAudioQueue] logic.
+ * one in order.
  *
- * Call [enqueue] from any thread; the drain loop runs on [Dispatchers.IO].
- * [onFinished] is invoked on IO when the queue drains completely.
+ * [onFinished] is invoked when the queue drains completely.
  */
 class AudioPlayer(private val scope: CoroutineScope) {
 
     private val queue = Channel<ByteArray>(capacity = Channel.UNLIMITED)
-    private var drainJob = scope.launch(Dispatchers.IO) { drain() }
+    private var isPlaying = false
+
+    init {
+        scope.launch(Dispatchers.Default) { drain() }
+    }
 
     /** Called when the queue empties (all audio finished playing). */
     var onFinished: (() -> Unit)? = null
@@ -35,26 +40,40 @@ class AudioPlayer(private val scope: CoroutineScope) {
         queue.trySend(bytes)
     }
 
-    /** Discard all queued audio immediately (e.g. on disconnect). */
+    /** Discard all queued audio immediately. */
     fun clear() {
         while (queue.tryReceive().isSuccess) { /* drain */ }
     }
+
+    /** Returns true if no audio is playing and the queue is empty. */
+    fun isIdle(): Boolean = queue.isEmpty && !isPlaying
 
     // ── Private drain loop ────────────────────────────────────────────────
 
     private suspend fun drain() {
         for (wavBytes in queue) {
-            playWav(wavBytes)
+            isPlaying = true
+            try {
+                playWav(wavBytes)
+            } catch (e: Exception) {
+                android.util.Log.e("AudioPlayer", "Error playing chunk: ${e.message}")
+            } finally {
+                isPlaying = false
+                // Check if this was the last chunk currently in the queue
+                if (queue.isEmpty) {
+                    android.util.Log.d("AudioPlayer", "Queue empty, notifying onFinished")
+                    onFinished?.invoke()
+                }
+            }
         }
-        onFinished?.invoke()
     }
 
-    private fun playWav(wavBytes: ByteArray) {
-        val header = parseWavHeader(wavBytes) ?: return
+    private suspend fun playWav(wavBytes: ByteArray) = withContext(Dispatchers.IO) {
+        val header = parseWavHeader(wavBytes) ?: return@withContext
         val (sampleRate, channels, bitsPerSample) = header
 
-        val pcmData  = wavBytes.copyOfRange(44, wavBytes.size)
-        if (pcmData.isEmpty()) return
+        val pcmData = wavBytes.copyOfRange(44, wavBytes.size)
+        if (pcmData.isEmpty()) return@withContext
 
         val encoding = if (bitsPerSample == 16)
             AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
@@ -79,35 +98,39 @@ class AudioPlayer(private val scope: CoroutineScope) {
                 .setTransferMode(AudioTrack.MODE_STATIC)
                 .setBufferSizeInBytes(pcmData.size)
                 .build()
-        } catch (_: Exception) { return }
+        } catch (e: Exception) {
+            android.util.Log.e("AudioPlayer", "Failed to build AudioTrack: ${e.message}")
+            return@withContext
+        }
 
-        track.write(pcmData, 0, pcmData.size)
-        track.play()
+        try {
+            track.write(pcmData, 0, pcmData.size)
+            track.play()
 
-        // Block until playback finishes (calculate duration from PCM size).
-        val bytesPerSample  = bitsPerSample / 8
-        val durationMs = pcmData.size.toLong() * 1000L / (sampleRate * channels * bytesPerSample)
-        Thread.sleep(durationMs + 80) // small tail buffer
-
-        track.stop()
-        track.release()
-
-        // If the queue is now empty, notify caller.
-        if (queue.isEmpty) onFinished?.invoke()
+            // Calculate duration from PCM size
+            val bytesPerSample = bitsPerSample / 8
+            val durationMs = pcmData.size.toLong() * 1000L / (sampleRate * channels * bytesPerSample)
+            
+            // Suspend (non-blocking) until playback finishes
+            delay(durationMs + 80)
+        } finally {
+            try {
+                track.stop()
+                track.release()
+            } catch (_: Exception) {}
+        }
     }
 
     // ── WAV header parser ─────────────────────────────────────────────────
 
-    /** Returns Triple(sampleRate, channels, bitsPerSample) or null on failure. */
     private fun parseWavHeader(bytes: ByteArray): Triple<Int, Int, Int>? {
         if (bytes.size < 44) return null
-        // "RIFF" magic
         if (bytes[0] != 'R'.code.toByte() || bytes[1] != 'I'.code.toByte()) return null
 
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val channels       = bb.getShort(22).toInt() and 0xFFFF
-        val sampleRate     = bb.getInt(24)
-        val bitsPerSample  = bb.getShort(34).toInt() and 0xFFFF
+        val channels = bb.getShort(22).toInt() and 0xFFFF
+        val sampleRate = bb.getInt(24)
+        val bitsPerSample = bb.getShort(34).toInt() and 0xFFFF
 
         if (channels < 1 || sampleRate < 1 || bitsPerSample < 1) return null
         return Triple(sampleRate, channels, bitsPerSample)

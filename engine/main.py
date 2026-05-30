@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 import time
@@ -85,8 +86,28 @@ async def voice_pipeline(
         async with httpx.AsyncClient(timeout=120.0) as http_client:
             while True:
 
-                # 1. Receive next message
-                msg = await websocket.receive()
+                # 1. Receive next message with dynamic timeout for silence detection
+                receive_timeout = None
+                if not in_speech:
+                    if silence_start is not None:
+                        # We are in the follow-up window (user already sent mic_open)
+                        receive_timeout = max(0.1, SILENCE_TIMEOUT_S - (time.monotonic() - silence_start))
+                    else:
+                        # We are waiting for the client to be ready (send mic_open)
+                        # Use a generous timeout to allow for long TTS playback
+                        receive_timeout = 120.0
+
+                try:
+                    msg = await asyncio.wait_for(websocket.receive(), timeout=receive_timeout)
+                except asyncio.TimeoutError:
+                    if silence_start is not None:
+                        log.info("Silence timeout (%.1f s) reached — closing and redirecting", SILENCE_TIMEOUT_S)
+                    else:
+                        log.warning("Client failed to send mic_open within 120s — closing")
+
+                    await websocket.send_json({"type": "silence_timeout"})
+                    await websocket.close(code=1000, reason="Silence timeout")
+                    return
 
                 if msg["type"] == "websocket.disconnect":
                     raise WebSocketDisconnect(code=msg.get("code", 1000))
@@ -130,16 +151,13 @@ async def voice_pipeline(
                     silence_start = None
                     log.debug("VAD start — silence timer paused")
 
-                if not in_speech and silence_start is not None:
-                    elapsed = time.monotonic() - silence_start
-                    if elapsed >= SILENCE_TIMEOUT_S:
-                        log.info(
-                            "Silence timeout after %.1f s — closing and redirecting to router",
-                            elapsed,
-                        )
-                        await websocket.send_json({"type": "silence_timeout"})
-                        await websocket.close(code=1000, reason="Silence timeout")
-                        return
+                # If not in speech, keep only a small pre-roll (e.g., 1.0s) to avoid
+                # accumulating silence and slowing down transcription/denoising.
+                if not in_speech:
+                    max_pre_roll = int(MIC_SAMPLE_RATE * 1.0)
+                    if len(speech_buffer) > max_pre_roll:
+                        speech_buffer = speech_buffer[-max_pre_roll:]
+
                 # ─────────────────────────────────────────────────────────────
 
                 if vad_event is None or "end" not in vad_event:
@@ -186,6 +204,7 @@ async def voice_pipeline(
 
                 if not transcript:
                     log.warning("Turn #%d produced no transcript — skipping history", turns_handled)
+                    await websocket.send_json({"type": "done", "full_text": "", "transcript": ""})
                     silence_start = time.monotonic()
                     continue
 

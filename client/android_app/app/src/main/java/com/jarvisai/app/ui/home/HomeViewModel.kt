@@ -216,14 +216,22 @@ class HomeViewModel(
                 viewModelScope.launch(Dispatchers.Main) { handleMainMessage(text) }
             }
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                android.util.Log.e("HomeViewModel", "Main WS failure: ${t.message}")
                 _ui.update { it.copy(statusText = "ws error", errorCount = _ui.value.errorCount + 1) }
-                stopSilenceTimer()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (_ui.value.phase == Phase.MAIN) {
+                        switchBackToRouter()
+                    }
+                }
             }
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                android.util.Log.i("HomeViewModel", "Main WS closed: $reason")
                 _ui.update { it.copy(mainWsUrl = "closed") }
-                player.clear()
-                stopSilenceTimer()
-                clearConversation()
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (_ui.value.phase == Phase.MAIN && code != 1000) {
+                        switchBackToRouter()
+                    }
+                }
             }
         })
     }
@@ -264,7 +272,12 @@ class HomeViewModel(
                 val transcript = obj.get("transcript")?.asString
                 finaliseAiTurn(fullText)
                 fillTranscript(transcript)
-                // If audio still playing, pendingDoneActions will fire in onAudioQueueDrained
+                
+                // If the player is already idle (no audio chunks were received),
+                // we must manually unmute the mic to allow follow-up turns.
+                if (player.isIdle()) {
+                    onAudioQueueDrained()
+                }
             }
             "silence_timeout" -> {
                 _ui.update { it.copy(aiState = AiState.TIMEOUT) }
@@ -337,12 +350,14 @@ class HomeViewModel(
 
     private fun onAudioQueueDrained() {
         if (_ui.value.phase != Phase.MAIN) return
+        android.util.Log.d("HomeViewModel", "Audio queue drained - re-opening mic")
         micMuted = false
         pcmBuf.clear()
         unfreezeTimer()
         resetSilenceTimer()
         _ui.update { it.copy(aiState = AiState.WAITING) }
-        wsMain?.send(gson.toJson(mapOf("type" to "mic_open")))
+        val sent = wsMain?.send(gson.toJson(mapOf("type" to "mic_open"))) ?: false
+        if (!sent) android.util.Log.e("HomeViewModel", "Failed to send mic_open")
     }
 
     // ═════════════════════════════════════════════════════════════════════

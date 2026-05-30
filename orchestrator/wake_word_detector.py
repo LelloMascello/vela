@@ -26,7 +26,7 @@ WAKE_WORD = "hey_jarvis_v0.1"
 # To tune: watch the "best_score" and "smoothed_score" log lines while
 # saying the wake word.  LATCH_THRESHOLD should sit just above the highest
 # score you see during normal speech/noise.  THRESHOLD can be lower.
-LATCH_THRESHOLD  = 0.70  # single-frame instant trigger
+LATCH_THRESHOLD  = 0.40  # single-frame instant trigger
 THRESHOLD        = 0.45  # per-frame score for smooth path
 SMOOTH_WINDOW    = 5     # frames in rolling mean (~400 ms)
 SMOOTH_THRESHOLD = 0.35  # rolling mean required for smooth path
