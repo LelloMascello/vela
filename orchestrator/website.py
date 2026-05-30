@@ -1,7 +1,7 @@
 import os
 
 import pymongo
-from bson import json_util
+from bson import ObjectId, json_util
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -108,3 +108,55 @@ def select_chats(username: str):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.delete("/chats/{chat_id}")
+def delete_chat(chat_id: str):
+    """Permanently remove a single chat session by its MongoDB _id."""
+    try:
+        oid = ObjectId(chat_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chat_id format")
+
+    try:
+        result = mycol.delete_one({"_id": oid})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    return {"status": "deleted", "chat_id": chat_id}
+
+
+class ChatAppend(BaseModel):
+    new_turns: List[Dict[str, Any]]
+
+
+@app.patch("/chats/{chat_id}")
+def append_chat(chat_id: str, body: ChatAppend):
+    """
+    Append *new_turns* to the ``chat`` array of an existing session.
+    Called by engine/main.py at the end of a "continue" session instead of
+    inserting a brand-new document.
+    """
+    if not body.new_turns:
+        return {"status": "skipped", "reason": "no new turns"}
+
+    try:
+        oid = ObjectId(chat_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chat_id format")
+
+    try:
+        result = mycol.update_one(
+            {"_id": oid},
+            {"$push": {"chat": {"$each": body.new_turns}}},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    return {"status": "updated", "chat_id": chat_id, "appended": len(body.new_turns)}

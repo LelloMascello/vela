@@ -31,8 +31,17 @@ fun HomeScreen(
 ) {
     val ui by viewModel.uiState.collectAsState()
 
-    var routerHost  by remember { mutableStateOf("192.168.178.136:8000") }
+    var routerHost  by remember { mutableStateOf(viewModel.session.lastRouterHost ?: "192.168.178.136:8000") }
     var routerFrame by remember { mutableStateOf("1280") }
+
+    LaunchedEffect(ui.pendingContinuationId, ui.pendingContinuationHistory) {
+        val chatId = ui.pendingContinuationId
+        val history = ui.pendingContinuationHistory
+        // Auto-resume if already connected, otherwise wait for button
+        if (chatId != null && history != null && ui.phase != Phase.IDLE) {
+            viewModel.resumeSession()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -81,7 +90,7 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("IP ADDRESS", style = MaterialTheme.typography.labelSmall, color = TextDim, letterSpacing = 1.sp)
+                        Text("INDIRIZZO IP", style = MaterialTheme.typography.labelSmall, color = TextDim, letterSpacing = 1.sp)
                         Spacer(Modifier.height(4.dp))
                         FlowInput(routerHost, onValueChange = { routerHost = it })
                     }
@@ -99,13 +108,24 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     if (ui.phase == Phase.IDLE) {
-                        Button(
-                            onClick = { viewModel.connect(routerHost, routerFrame.toIntOrNull() ?: 1280) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                            modifier = Modifier.height(48.dp).weight(1f)
-                        ) {
-                            Text("CONNECT SYSTEM", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                        if (ui.pendingContinuationId != null) {
+                            Button(
+                                onClick = { viewModel.resumeSession() },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                                modifier = Modifier.height(48.dp).weight(1f)
+                            ) {
+                                Text("▶ RIPRENDI", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.connect(routerHost, routerFrame.toIntOrNull() ?: 1280) },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                                modifier = Modifier.height(48.dp).weight(1f)
+                            ) {
+                                Text("CONNETTI SISTEMA", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                            }
                         }
                     } else {
                         Button(
@@ -115,7 +135,7 @@ fun HomeScreen(
                             border = BorderStroke(1.dp, Red.copy(alpha = 0.3f)),
                             modifier = Modifier.height(48.dp).weight(1f)
                         ) {
-                            Text("DISCONNECT", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                            Text("DISCONNETTI", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                         }
                     }
 
@@ -227,14 +247,14 @@ fun IdleState(isConnected: Boolean) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            if (isConnected) "SYSTEM ACTIVE" else "SYSTEM OFFLINE",
+            if (isConnected) "SISTEMA ATTIVO" else "SISTEMA OFFLINE",
             style = MaterialTheme.typography.titleMedium,
             color = if (isConnected) Green else TextDim,
             fontWeight = FontWeight.Black,
             letterSpacing = 4.sp
         )
         Text(
-            if (isConnected) "Waiting for wake word..." else "Initialize connection to start",
+            if (isConnected) "In attesa della wake word..." else "Inizializza la connessione per iniziare",
             style = MaterialTheme.typography.bodySmall,
             color = TextMuted
         )
@@ -262,9 +282,9 @@ fun ConversationPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("LIVE SESSION", style = MaterialTheme.typography.labelSmall, color = TextDim, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            Text("SESSIONE LIVE", style = MaterialTheme.typography.labelSmall, color = TextDim, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
             TextButton(onClick = onClear) {
-                Text("CLEAR", style = MaterialTheme.typography.labelSmall, color = TextDim)
+                Text("PULISCI", style = MaterialTheme.typography.labelSmall, color = TextDim)
             }
         }
         

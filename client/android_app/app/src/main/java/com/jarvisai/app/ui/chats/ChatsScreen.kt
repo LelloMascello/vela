@@ -34,6 +34,7 @@ import java.util.*
 @Composable
 fun ChatsScreen(
     viewModel:      ChatsViewModel,
+    onContinue:     (ChatSession) -> Unit,
 ) {
     val ui    by viewModel.uiState.collectAsState()
     val focus = LocalFocusManager.current
@@ -56,7 +57,7 @@ fun ChatsScreen(
                 onValueChange = { viewModel.search(it) },
                 modifier      = Modifier.weight(1f),
                 placeholder   = {
-                    Text("Search sessions…", color = TextDim,
+                    Text("Cerca sessioni…", color = TextDim,
                         style = MaterialTheme.typography.bodyMedium)
                 },
                 leadingIcon  = { Text("⌕", fontSize = 16.sp, color = TextDim) },
@@ -90,9 +91,9 @@ fun ChatsScreen(
                 ) {
                     Text(
                         text = if (ui.query.isBlank())
-                            "${ui.sessions.size} session${if (ui.sessions.size != 1) "s" else ""}"
+                            "${ui.sessions.size} session${if (ui.sessions.size != 1) "i" else "e"}"
                         else
-                            "${ui.filtered.size} of ${ui.sessions.size}",
+                            "${ui.filtered.size} di ${ui.sessions.size}",
                         modifier   = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         style      = MaterialTheme.typography.labelSmall,
                         color      = TextDim,
@@ -114,7 +115,7 @@ fun ChatsScreen(
                     ) {
                         CircularProgressIndicator(color = Accent, strokeWidth = 2.dp,
                             modifier = Modifier.size(28.dp))
-                        Text("Loading sessions…", style = MaterialTheme.typography.bodySmall,
+                        Text("Caricamento sessioni…", style = MaterialTheme.typography.bodySmall,
                             color = TextDim)
                     }
                 }
@@ -126,9 +127,9 @@ fun ChatsScreen(
                 EmptyState(
                     icon    = if (ui.query.isBlank()) "💬" else "🔍",
                     message = if (ui.query.isBlank())
-                        "No sessions yet. Start a voice session to see it here."
+                        "Nessuna sessione ancora. Avvia una sessione vocale per vederla qui."
                     else
-                        "No sessions match \"${ui.query}\"",
+                        "Nessuna sessione corrispondente a \"${ui.query}\"",
                 )
             }
             else -> {
@@ -137,8 +138,13 @@ fun ChatsScreen(
                     contentPadding  = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(ui.filtered, key = { it.hashCode() }) { session ->
-                        SessionCard(session = session, query = ui.query)
+                    items(ui.filtered, key = { it.resolveId() ?: it.hashCode().toString() }) { session ->
+                        SessionCard(
+                            session = session,
+                            query = ui.query,
+                            onDelete = { viewModel.deleteSession(it) },
+                            onContinue = { onContinue(session) }
+                        )
                     }
                 }
             }
@@ -151,14 +157,44 @@ fun ChatsScreen(
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-fun SessionCard(session: ChatSession, query: String) {
+fun SessionCard(
+    session: ChatSession,
+    query: String,
+    onDelete: (String) -> Unit,
+    onContinue: () -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     val msgs     = session.chat
     val aiCount  = msgs.count { it.role == "assistant" }
     val title    = sessionTitle(session)
     val preview  = previewText(session)
     val dateStr  = formatDate(session)
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Elimina sessione") },
+            text = { Text("Eliminare permanentemente questa sessione?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    session.resolveId()?.let { onDelete(it) }
+                    showDeleteConfirm = false
+                }) {
+                    Text("ELIMINA", color = Red)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("ANNULLA")
+                }
+            },
+            containerColor = Surface1,
+            titleContentColor = TextPrimary,
+            textContentColor = TextMuted,
+        )
+    }
 
     // Chevron rotation animation
     val chevronRotation by animateFloatAsState(
@@ -218,7 +254,7 @@ fun SessionCard(session: ChatSession, query: String) {
                         border = BorderStroke(1.dp, Sky.copy(alpha = 0.2f)),
                     ) {
                         Text(
-                            "$aiCount turn${if (aiCount != 1) "s" else ""}",
+                            "$aiCount turn${if (aiCount != 1) "i" else "o"}",
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             style    = MaterialTheme.typography.labelSmall,
                             color    = Sky,
@@ -241,6 +277,32 @@ fun SessionCard(session: ChatSession, query: String) {
             ) {
                 Column {
                     HorizontalDivider(color = Border1, thickness = 1.dp)
+
+                    // Actions Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = onContinue,
+                            colors = ButtonDefaults.textButtonColors(contentColor = Accent)
+                        ) {
+                            Text("▶ CONTINUA", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            onClick = { showDeleteConfirm = true },
+                            colors = ButtonDefaults.textButtonColors(contentColor = Red)
+                        ) {
+                            Text("🗑 ELIMINA", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    HorizontalDivider(color = Border1.copy(alpha = 0.5f), thickness = 0.5.dp)
+
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -248,7 +310,7 @@ fun SessionCard(session: ChatSession, query: String) {
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         if (msgs.isEmpty()) {
-                            Text("No messages in this session.",
+                            Text("Nessun messaggio in questa sessione.",
                                 style = MaterialTheme.typography.bodySmall, color = TextDim)
                         } else {
                             msgs.forEach { msg -> MessageBubble(msg, query) }
@@ -272,7 +334,7 @@ fun MessageBubble(msg: ChatMessage, query: String) {
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
         Text(
-            text     = if (isUser) "You" else "jarvis.ai",
+            text     = if (isUser) "Tu" else "jarvis.ai",
             style    = MaterialTheme.typography.labelSmall,
             color    = TextDim,
             modifier = Modifier.padding(

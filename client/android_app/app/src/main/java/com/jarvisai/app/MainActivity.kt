@@ -96,6 +96,9 @@ fun JarvisAIApp(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
+    // Scoped to the activity to allow cross-screen session continuation
+    val homeVm: HomeViewModel = viewModel(session, webBaseUrl)
+
     // Start at auth unless already logged in
     val startDestination = if (session.isLoggedIn) Routes.HOME else Routes.AUTH
 
@@ -110,6 +113,7 @@ fun JarvisAIApp(
                     onNavigateChats = { navController.navigate(Routes.CHATS) },
                     onLogout = {
                         session.clear()
+                        homeVm.disconnect() // Ensure shared VM is disconnected
                         navController.navigate(Routes.AUTH) {
                             popUpTo(0) { inclusive = true }
                         }
@@ -152,15 +156,13 @@ fun JarvisAIApp(
                         return@composable
                     }
 
-                    val vm: HomeViewModel = viewModel(session, webBaseUrl)
-
                     // Request mic permission before the screen starts connecting
                     LaunchedEffect(Unit) {
                         activity.requestMicPermission { /* permission granted — connect button still manual */ }
                     }
 
                     HomeScreen(
-                        viewModel = vm,
+                        viewModel = homeVm,
                     )
                 }
 
@@ -180,6 +182,12 @@ fun JarvisAIApp(
 
                     ChatsScreen(
                         viewModel = vm,
+                        onContinue = { chatSession ->
+                            homeVm.prepareContinuation(chatSession.resolveId() ?: "", chatSession.chat)
+                            navController.navigate(Routes.HOME) {
+                                popUpTo(Routes.CHATS) { inclusive = true }
+                            }
+                        }
                     )
                 }
             }

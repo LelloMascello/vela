@@ -29,7 +29,8 @@ load_dotenv(find_dotenv())
 
 _website_host = os.getenv("HOST_WEBSITE", "127.0.0.1")
 _website_port = os.getenv("PORT_WEBSITE", "8005")
-DATABASE_URL = f"http://{_website_host}:{_website_port}/chats/insert"
+DATABASE_URL        = f"http://{_website_host}:{_website_port}/chats/insert"
+DATABASE_PATCH_URL  = f"http://{_website_host}:{_website_port}/chats"
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -67,10 +68,20 @@ active_connections: set[WebSocket] = set()
 async def voice_pipeline(
     websocket: WebSocket,
     username: str = Query(...),
+    chat_id: str = Query(default=""),
+    initial_history: str = Query(default=""),
 ):
     """
     Main voice pipeline:
       client mic (PCM) → VAD → denoise → Whisper STT → Gemma 4 → TTS → client
+
+    Optional query params for "continue" mode
+    -----------------------------------------
+    chat_id          : MongoDB _id of the session to extend (hex string).
+                       When set the finally-block PATCHes that document instead
+                       of inserting a new one.
+    initial_history  : URL-encoded JSON array of {role, content} dicts that
+                       pre-populate conversation_history for the LLM context.
     """
     await websocket.accept()
     active_connections.add(websocket)
@@ -84,8 +95,24 @@ async def voice_pipeline(
     chunks_received = 0
     turns_handled   = 0
 
-    # Per-connection chat history — dropped automatically when this coroutine exits.
+    # Pre-populate conversation history when continuing an existing session.
+    # initial_history is a JSON-encoded list of {role, content} dicts passed
+    # as a URL query parameter by the "Continue" button in the chats page.
     conversation_history: list[dict] = []
+    preloaded_count = 0
+    if chat_id and initial_history:
+        try:
+            import json as _json_init
+            parsed = _json_init.loads(initial_history)
+            if isinstance(parsed, list):
+                conversation_history = parsed
+                preloaded_count = len(conversation_history)
+                log.info(
+                    "Continue session: chat_id=%s | pre-loaded %d history messages",
+                    chat_id, preloaded_count,
+                )
+        except Exception as hist_err:
+            log.warning("Failed to parse initial_history: %s — starting fresh", hist_err)
 
     # ── Silence-timeout state ─────────────────────────────────────────────────
     silence_start: float | None = time.monotonic()
@@ -231,16 +258,44 @@ async def voice_pipeline(
         if conversation_history:
             async with httpx.AsyncClient(timeout=30.0) as db_client:
                 try:
-                    resp = await db_client.post(
-                        DATABASE_URL,
-                        json={
-                            "username":   username,
-                            "created_at": session_started_ms,
-                            "chat":       conversation_history,
-                        }
-                    )
-                    resp.raise_for_status()
-                    log.info("Session saved successfully for user=%s (%d messages)", username, len(conversation_history))
+                    # Work out how many messages were added in *this* session.
+                    # When continuing an existing chat the pre-loaded history
+                    # is already stored in MongoDB; we only want to append the
+                    # new turns that were produced during this connection.
+                    new_turns = conversation_history[preloaded_count:]
+
+                    if chat_id and new_turns:
+                        # Continue mode: append only the new turns to the
+                        # existing MongoDB document via PATCH.
+                        resp = await db_client.patch(
+                            f"{DATABASE_PATCH_URL}/{chat_id}",
+                            json={"new_turns": new_turns},
+                        )
+                        resp.raise_for_status()
+                        log.info(
+                            "Session extended for user=%s | chat_id=%s | +%d messages",
+                            username, chat_id, len(new_turns),
+                        )
+                    elif not chat_id:
+                        # Normal mode: insert a brand-new document.
+                        resp = await db_client.post(
+                            DATABASE_URL,
+                            json={
+                                "username":   username,
+                                "created_at": session_started_ms,
+                                "chat":       conversation_history,
+                            }
+                        )
+                        resp.raise_for_status()
+                        log.info(
+                            "Session saved successfully for user=%s (%d messages)",
+                            username, len(conversation_history),
+                        )
+                    else:
+                        log.info(
+                            "Continue session produced no new turns for user=%s — nothing to persist",
+                            username,
+                        )
                 except Exception as db_err:
                     log.error("Failed to save history for user=%s during cleanup: %s", username, db_err)
 

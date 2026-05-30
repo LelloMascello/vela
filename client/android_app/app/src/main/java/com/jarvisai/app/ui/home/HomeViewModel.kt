@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarvisai.app.audio.AudioPlayer
 import com.jarvisai.app.audio.MicRecorder
+import com.jarvisai.app.data.ChatMessage
 import com.jarvisai.app.data.ConversationTurn
 import com.jarvisai.app.data.SessionManager
 import com.jarvisai.app.data.network.ApiResult
@@ -18,7 +19,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.*
 import okio.ByteString.Companion.toByteString
+import java.net.URLEncoder
 import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
 
 // ── Phase ─────────────────────────────────────────────────────────────────
 
@@ -46,10 +49,12 @@ data class HomeUiState(
     val currentAmplitude: Float              = 0f,
     val conversation:   List<ConversationTurn> = emptyList(),
     val errorMessage:   String               = "",
+    val pendingContinuationId: String?       = null,
+    val pendingContinuationHistory: List<com.jarvisai.app.data.ChatMessage>? = null,
 )
 
 class HomeViewModel(
-    private val session:     SessionManager,
+    val session:     SessionManager,
     private val webBaseUrl:  String,
 ) : ViewModel() {
 
@@ -100,11 +105,12 @@ class HomeViewModel(
         val username = session.username ?: return
         val password = session.password ?: return
         currentFrameSize = routerFrame
+        session.lastRouterHost = routerHost
 
         viewModelScope.launch {
-            _ui.update { it.copy(statusText = "authenticating…") }
+            _ui.update { it.copy(statusText = "autenticazione…") }
             when (val r = api.routerAuth(routerHost, username, password)) {
-                is ApiResult.Error   -> _ui.update { it.copy(statusText = "auth failed", errorMessage = r.message) }
+                is ApiResult.Error   -> _ui.update { it.copy(statusText = "autenticazione fallita", errorMessage = r.message) }
                 is ApiResult.Success -> {
                     savedRouterUrl = r.data
                     startMic()
@@ -112,6 +118,36 @@ class HomeViewModel(
                 }
             }
         }
+    }
+
+    fun resumeSession() {
+        val ui = _ui.value
+        val chatId = ui.pendingContinuationId ?: return
+        val history = ui.pendingContinuationHistory ?: return
+        val username = session.username ?: return
+        val ip = "192.168.178.136" // Should ideally be dynamic or passed
+        val port = 8002
+
+        viewModelScope.launch {
+            try {
+                _ui.update { it.copy(
+                    pendingContinuationId = null,
+                    pendingContinuationHistory = null
+                ) }
+                startMic()
+                switchToMain(ip, port, username, chatId, history)
+            } catch (e: Exception) {
+                android.util.Log.e("HomeViewModel", "Resume failed", e)
+                _ui.update { it.copy(errorMessage = "Ripresa fallita: ${e.message}") }
+            }
+        }
+    }
+
+    fun prepareContinuation(chatId: String, history: List<ChatMessage>) {
+        _ui.update { it.copy(
+            pendingContinuationId = chatId,
+            pendingContinuationHistory = history
+        ) }
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -133,7 +169,7 @@ class HomeViewModel(
         wsRouter = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 micMuted = false
-                pcmBuf.clear()
+                synchronized(pcmBuf) { pcmBuf.clear() }
                 _ui.update { it.copy(
                     phase       = Phase.ROUTER,
                     statusText  = "router ws",
@@ -158,7 +194,7 @@ class HomeViewModel(
         android.util.Log.d("HomeViewModel", "Router message: $text")
 
         if (obj.has("error")) {
-            _ui.update { it.copy(errorCount = _ui.value.errorCount + 1) }
+            _ui.update { it.copy(errorCount = _ui.value.errorCount + 1, statusText = "errore router") }
             return
         }
 
@@ -170,8 +206,6 @@ class HomeViewModel(
             if (obj.get("wake_word").asBoolean) {
                 _ui.update { it.copy(detectCount = _ui.value.detectCount + 1) }
             }
-            // Do NOT return here, as the same message might contain redirection info
-            // or the redirection might follow immediately in another message.
         }
 
         // Redirect to main
@@ -188,25 +222,60 @@ class HomeViewModel(
     //  SWITCH TO MAIN
     // ═════════════════════════════════════════════════════════════════════
 
-    private fun switchToMain(ip: String, port: Int, username: String) {
+    private fun switchToMain(
+        ip: String,
+        port: Int,
+        username: String,
+        chatId: String? = null,
+        initialHistory: List<ChatMessage>? = null
+    ) {
         wsRouter?.close(1000, "switching to main"); wsRouter = null
-        val url = "ws://$ip:$port/ws?username=${java.net.URLEncoder.encode(username, "UTF-8")}"
-
-        // Clear conversation for new session
-        clearConversation()
+        
+        val encodedUser = URLEncoder.encode(username, StandardCharsets.UTF_8.name())
+        var url = "ws://$ip:$port/ws?username=$encodedUser"
+        
+        if (chatId != null && initialHistory != null) {
+            url += "&chat_id=$chatId"
+            val historyJson = gson.toJson(initialHistory)
+            val encodedHistory = URLEncoder.encode(historyJson, StandardCharsets.UTF_8.name())
+            url += "&initial_history=$encodedHistory"
+            
+            // Pre-populate conversation with history
+            val combinedTurns = mutableListOf<ConversationTurn>()
+            var currentTurn: ConversationTurn? = null
+            
+            for (msg in initialHistory) {
+                if (msg.role == "user") {
+                    if (currentTurn != null) combinedTurns.add(currentTurn)
+                    currentTurn = ConversationTurn(userText = msg.content, aiText = null)
+                } else if (msg.role == "assistant") {
+                    if (currentTurn != null) {
+                        combinedTurns.add(currentTurn.copy(aiText = msg.content))
+                        currentTurn = null
+                    } else {
+                        combinedTurns.add(ConversationTurn(userText = null, aiText = msg.content))
+                    }
+                }
+            }
+            currentTurn?.let { combinedTurns.add(it) }
+            _ui.update { it.copy(conversation = combinedTurns) }
+        } else {
+            // Clear conversation for new session
+            clearConversation()
+        }
 
         val req = Request.Builder().url(url).build()
         wsMain = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 currentFrameSize = MAIN_FRAME_LENGTH
                 micMuted = false
-                pcmBuf.clear()
+                synchronized(pcmBuf) { pcmBuf.clear() }
                 _ui.update { it.copy(
                     phase      = Phase.MAIN,
                     statusText = "main ws",
                     mainWsUrl  = "$ip:$port",
                     frameSize  = MAIN_FRAME_LENGTH,
-                    aiState    = AiState.LISTENING,
+                    aiState    = if (chatId != null) AiState.WAITING else AiState.LISTENING,
                     silenceLeft = SILENCE_TIMEOUT_S,
                 ) }
                 startSilenceTimer()
@@ -247,7 +316,7 @@ class HomeViewModel(
         when (type) {
             "listening_stop" -> {
                 micMuted = true
-                pcmBuf.clear()
+                synchronized(pcmBuf) { pcmBuf.clear() }
                 // Add a pending user turn immediately (transcript = null)
                 addPendingUserTurn()
                 _ui.update { it.copy(aiState = AiState.THINKING) }
@@ -352,7 +421,7 @@ class HomeViewModel(
         if (_ui.value.phase != Phase.MAIN) return
         android.util.Log.d("HomeViewModel", "Audio queue drained - re-opening mic")
         micMuted = false
-        pcmBuf.clear()
+        synchronized(pcmBuf) { pcmBuf.clear() }
         unfreezeTimer()
         resetSilenceTimer()
         _ui.update { it.copy(aiState = AiState.WAITING) }
@@ -391,17 +460,23 @@ class HomeViewModel(
     }
 
     private fun pushSamples(samples: ShortArray) {
-        samples.forEach { pcmBuf.addLast(it) }
+        synchronized(pcmBuf) {
+            samples.forEach { pcmBuf.addLast(it) }
+        }
 
         val targetWs = if (_ui.value.phase == Phase.MAIN) wsMain else wsRouter
         if (targetWs == null) return
 
-        while (pcmBuf.size >= currentFrameSize) {
-            val frame = ShortArray(currentFrameSize) { pcmBuf.removeFirst() }
+        while (true) {
+            val frame = synchronized(pcmBuf) {
+                if (pcmBuf.size >= currentFrameSize) {
+                    ShortArray(currentFrameSize) { pcmBuf.removeFirst() }
+                } else null
+            } ?: break
 
             // Convert to little-endian byte array (Int16 PCM)
             val bytes = ByteArray(frame.size * 2)
-            val bb    = java.nio.ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            val bb    = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
             frame.forEach { bb.putShort(it) }
 
             targetWs.send(bytes.toByteString())
@@ -447,9 +522,13 @@ class HomeViewModel(
             wwScore        = 0f,
             wwModelName    = "—",
         ) }
-        val url = savedRouterUrl ?: run { cleanup(); return }
-        currentFrameSize = ROUTER_FRAME_DEFAULT
-        connectRouterWs(url)
+        
+        val host = session.lastRouterHost
+        if (host != null) {
+            connect(host, ROUTER_FRAME_DEFAULT)
+        } else {
+            cleanup()
+        }
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -461,7 +540,7 @@ class HomeViewModel(
         player.clear()
         stopSilenceTimer()
         micMuted = false
-        pcmBuf.clear()
+        synchronized(pcmBuf) { pcmBuf.clear() }
         savedRouterUrl = null
         clearConversation()
         _ui.update { HomeUiState() }

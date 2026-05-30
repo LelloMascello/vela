@@ -18,6 +18,7 @@ data class ChatsUiState(
     val filtered:     List<ChatSession> = emptyList(),
     val query:        String            = "",
     val errorMessage: String            = "",
+    val deletedId:    String?           = null,
 )
 
 class ChatsViewModel(
@@ -57,6 +58,24 @@ class ChatsViewModel(
     }
 
     fun clearSearch() = search("")
+
+    fun deleteSession(chatId: String) {
+        viewModelScope.launch {
+            _ui.update { it.copy(errorMessage = "") }
+            when (val r = api.deleteChat(webBaseUrl, chatId)) {
+                is ApiResult.Success -> {
+                    _ui.update { state ->
+                        val newSessions = state.sessions.filter { it.resolveId() != chatId }
+                        val newFiltered = state.filtered.filter { it.resolveId() != chatId }
+                        state.copy(sessions = newSessions, filtered = newFiltered)
+                    }
+                }
+                is ApiResult.Error -> {
+                    _ui.update { it.copy(errorMessage = "Eliminazione fallita: ${r.message}") }
+                }
+            }
+        }
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
