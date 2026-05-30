@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import os
 import sys
 import time
 
 import httpx
 import numpy as np
 import torch
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,6 +22,16 @@ from audio import (
 from inference import (
     stream_llm_response,
 )
+
+load_dotenv(find_dotenv())
+
+# ── Config from .env ──────────────────────────────────────────────────────────
+
+_website_host = os.getenv("HOST_WEBSITE", "127.0.0.1")
+_website_port = os.getenv("PORT_WEBSITE", "8005")
+DATABASE_URL = f"http://{_website_host}:{_website_port}/chats/insert"
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -41,8 +53,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-DATABASE_URL = "http://127.0.0.1:8005/chats/insert"
 
 # How many seconds of silence (no VAD speech detected) before the connection
 # is closed and the client is told to reconnect to the router WebSocket.
@@ -90,11 +100,8 @@ async def voice_pipeline(
                 receive_timeout = None
                 if not in_speech:
                     if silence_start is not None:
-                        # We are in the follow-up window (user already sent mic_open)
                         receive_timeout = max(0.1, SILENCE_TIMEOUT_S - (time.monotonic() - silence_start))
                     else:
-                        # We are waiting for the client to be ready (send mic_open)
-                        # Use a generous timeout to allow for long TTS playback
                         receive_timeout = 120.0
 
                 try:
@@ -151,14 +158,10 @@ async def voice_pipeline(
                     silence_start = None
                     log.debug("VAD start — silence timer paused")
 
-                # If not in speech, keep only a small pre-roll (e.g., 1.0s) to avoid
-                # accumulating silence and slowing down transcription/denoising.
                 if not in_speech:
                     max_pre_roll = int(MIC_SAMPLE_RATE * 1.0)
                     if len(speech_buffer) > max_pre_roll:
                         speech_buffer = speech_buffer[-max_pre_roll:]
-
-                # ─────────────────────────────────────────────────────────────
 
                 if vad_event is None or "end" not in vad_event:
                     continue
@@ -223,11 +226,9 @@ async def voice_pipeline(
     except Exception as e:
         log.error("Unexpected pipeline crash for user=%s: %s", username, e, exc_info=True)
     finally:
-        # Guarantees connection cleanup and data persistence regardless of how the try block exited
         active_connections.discard(websocket)
-        
+
         if conversation_history:
-            # Open a fresh HTTP client dedicated to performing the database cleanup request safely
             async with httpx.AsyncClient(timeout=30.0) as db_client:
                 try:
                     resp = await db_client.post(

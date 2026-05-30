@@ -3,20 +3,22 @@ import io
 import os
 import wave
 
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+load_dotenv(find_dotenv())
+
 app = FastAPI()
 
-# Path to the Piper executable and voice model.
-# Override via environment variables if your layout differs.
-PIPER_BIN   = os.getenv("PIPER_BIN",   "/home/leo/piper/piper/piper")
-PIPER_MODEL = os.getenv("PIPER_MODEL", "/home/leo/piper/models/it_IT-riccardo-x_low.onnx")
+# ── Config from .env ──────────────────────────────────────────────────────────
 
-# Sample rate produced by the model (lessac-medium → 22 050 Hz).
-# If you switch models, update this or set PIPER_SAMPLE_RATE accordingly.
+PIPER_BIN         = os.getenv("PIPER_BIN",         "/home/leo/piper/piper/piper")
+PIPER_MODEL       = os.getenv("PIPER_MODEL",       "/home/leo/piper/models/it_IT-riccardo-x_low.onnx")
 PIPER_SAMPLE_RATE = int(os.getenv("PIPER_SAMPLE_RATE", "22050"))
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class TTSRequest(BaseModel):
@@ -61,7 +63,7 @@ async def text_to_speech(request: TTSRequest) -> Response:
             status_code=500,
             detail=(
                 f"Piper binary not found at '{PIPER_BIN}'. "
-                "Set the PIPER_BIN env variable to the correct path."
+                "Set the PIPER_BIN env variable in .env to the correct path."
             ),
         )
 

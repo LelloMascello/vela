@@ -1,13 +1,27 @@
+import os
+
+import pymongo
+from bson import json_util
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from auth import signup, login
-import pymongo
-from bson import json_util
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
-mydb = pymongo.MongoClient("mongodb://localhost:27017/")["ai_assistant"]
+from auth import signup, login
+
+load_dotenv(find_dotenv())
+
+# ── Config from .env ──────────────────────────────────────────────────────────
+
+_mongo_host = os.getenv("HOST_MONGODB", "localhost")
+_mongo_port = os.getenv("PORT_MONGODB", "27017")
+MONGODB_URL = f"mongodb://{_mongo_host}:{_mongo_port}/"
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+mydb = pymongo.MongoClient(MONGODB_URL)["ai_assistant"]
 mycol = mydb["ai_chats"]
 
 # Index on username so selects are fast even with many sessions.
@@ -26,7 +40,6 @@ class ChatSession(BaseModel):
 
 
 # ── Page routes ────────────────────────────────────────────────────────────
-# Changed to standard 'def' because synchronous file reading blocks the event loop.
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -47,7 +60,6 @@ def chats_page():
 
 
 # ── Auth routes ────────────────────────────────────────────────────────────
-# Changed to standard 'def' assuming the imported auth functions are synchronous.
 
 @app.post("/signup")
 def do_signup(username: str = Form(...), password: str = Form(...)):
@@ -66,8 +78,6 @@ def do_login(username: str = Form(...), password: str = Form(...)):
 
 
 # ── Chat routes ────────────────────────────────────────────────────────────
-# Changed to standard 'def' because pymongo is synchronous. FastAPI will safely 
-# run these inside a thread pool to avoid freezing the server.
 
 @app.post("/chats/insert")
 def insert_chats(history: ChatSession):
@@ -76,11 +86,9 @@ def insert_chats(history: ChatSession):
     Validated automatically via Pydantic.
     """
     if not history.chat:
-        # Nothing to save — skip silently.
         return {"status": "skipped", "reason": "empty chat"}
 
     try:
-        # Convert Pydantic model to dict for MongoDB insertion
         result = mycol.insert_one(history.model_dump())
         return {"status": "success", "inserted_id": str(result.inserted_id)}
     except Exception as e:

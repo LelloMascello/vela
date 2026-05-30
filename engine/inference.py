@@ -1,22 +1,32 @@
 import json
 import logging
+import os
 import time
 
 import httpx
+from dotenv import find_dotenv, load_dotenv
 from fastapi import WebSocket
 
 from audio import MIC_SAMPLE_RATE, synthesize_and_forward_audio, transcribe_audio
 
+load_dotenv(find_dotenv())
+
 log = logging.getLogger("inference")
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Config from .env ──────────────────────────────────────────────────────────
 
-INFERENCE_URL = "http://localhost:8080/v1/chat/completions"
+INFERENCE_URL = (
+    f"http://{os.getenv('HOST_INFERENCE', 'localhost')}"
+    f":{os.getenv('PORT_INFERENCE', '8080')}"
+    "/v1/chat/completions"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "Sei un assistente vocale utile. "
     "Riceverai messaggi in inglese o italiano; rispondi sempre nella stessa lingua parlata dall'utente. "
-    "la tua risposta verrà pronunciata ad alta voce, "
+    "la tua risposta verrà pronunciata ad alta voce, quindi si sintetico"
     "non mostrata come testo, quindi evita markdown, elenchi puntati e liste lunghe."
 )
 

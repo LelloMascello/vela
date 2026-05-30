@@ -1,14 +1,29 @@
+import os
+
+from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import httpx
 import numpy as np
 
 from auth import login
 
+load_dotenv(find_dotenv())
+
+# ── Config from .env ──────────────────────────────────────────────────────────
+
+DETECTOR_URL = (
+    f"http://{os.getenv('HOST_DETECTOR', 'localhost')}"
+    f":{os.getenv('PORT_DETECTOR', '8001')}"
+)
+MAIN_WS_HOST = os.getenv("MAIN_WS_HOST", "localhost")
+MAIN_WS_PORT = int(os.getenv("PORT_MAIN", "8002"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 app = FastAPI()
 security = HTTPBasic()
-
-from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,10 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-DETECTOR_URL    = "http://localhost:8001"
-MAIN_WS_HOST    = "192.168.178.136"
-MAIN_WS_PORT    = 8002
 
 
 # How many frames to consume from the client without forwarding to the detector
@@ -72,7 +83,7 @@ async def authentication(
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    username: str = Query(...),  # fix: username ricevuto come query param (?username=xxx)
+    username: str = Query(...),
 ):
     await websocket.accept()
 
@@ -126,18 +137,13 @@ async def websocket_endpoint(
 
                     # Warm-up: forward frames to the detector so its mel-feature
                     # and score-history buffers fill with fresh audio, but suppress
-                    # the wake-word result.  Simply skipping frames (without
-                    # posting them) leaves stale mel features in the model and
-                    # does not fix false positives.
+                    # the wake-word result.
                     if frames_processed <= DETECTOR_WARMUP_FRAMES:
                         continue
 
                     result = resp.json()
 
                     if result.get("wake_word"):
-                        # llama.cpp and main.py are always up (started by
-                        # start_all.sh), so redirect the client directly without
-                        # polling /ready first.
                         await websocket.send_json({
                             "ip":       MAIN_WS_HOST,
                             "port":     MAIN_WS_PORT,

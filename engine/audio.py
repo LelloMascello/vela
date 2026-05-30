@@ -1,6 +1,7 @@
 import base64
 import io
 import logging
+import os
 import time
 import wave
 
@@ -8,15 +9,25 @@ import httpx
 import noisereduce as nr
 import numpy as np
 import torch
+from dotenv import find_dotenv, load_dotenv
 from fastapi import WebSocket
 from silero_vad import VADIterator, load_silero_vad
+
+load_dotenv(find_dotenv())
 
 log = logging.getLogger("audio")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-SPEECH_TO_TEXT_URL       = "http://localhost:8004/"
-TEXT_TO_SPEECH_URL       = "http://localhost:8003/"
+SPEECH_TO_TEXT_URL = (
+    f"http://{os.getenv('HOST_STT', 'localhost')}"
+    f":{os.getenv('PORT_STT', '8004')}/"
+)
+TEXT_TO_SPEECH_URL = (
+    f"http://{os.getenv('HOST_TTS', 'localhost')}"
+    f":{os.getenv('PORT_TTS', '8003')}/"
+)
+
 MIC_SAMPLE_RATE          = 16_000
 PCM_CHUNK_SAMPLES        = 512
 PCM_CHUNK_BYTES_EXPECTED = PCM_CHUNK_SAMPLES * 2   # 16-bit → 2 bytes/sample
